@@ -6,7 +6,7 @@ import requests
 
 
 OUT_PATH = "data/team_features.json"
-BASE_URL = "https://www.balldontlie.io/api/v1/teams"
+BASE_URL = "https://balldontlie.io/api/v1/teams"
 
 
 def main():
@@ -30,7 +30,6 @@ def main():
         if not name:
             continue
 
-        # On initialise avec valeurs neutres
         out["by_team_name"][name] = {
             "team_name": name,
             "games": None,

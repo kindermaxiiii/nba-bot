@@ -3,12 +3,10 @@ import os
 import requests
 from datetime import datetime, timezone
 
-# --- SOURCE STATS (gratuit) ---
-# balldontlie NBA API: team season averages
-# Docs: /nba/v1/team_season_averages/{category}?season=YYYY&season_type=regular&type=advanced
+# --- SOURCE STATS ---
 BASE_URL = "https://api.balldontlie.io/nba/v1"
-
 OUT_PATH = "data/team_features.json"
+
 
 def guess_season_year() -> int:
     """
@@ -21,12 +19,15 @@ def guess_season_year() -> int:
         return y - 1
     return y
 
+
 def fetch_team_season_averages(season: int) -> dict:
     """
-    Returns JSON from balldontlie. If the API ever requires an API key,
-    user can set BALLDONTLIE_API_KEY as a GitHub Secret and it will be used.
+    Returns JSON from balldontlie.
+    If API key exists in GitHub Secret BALLDONTLIE_API_KEY,
+    it will be used automatically.
     """
     url = f"{BASE_URL}/team_season_averages/general"
+
     params = {
         "season": season,
         "season_type": "regular",
@@ -35,17 +36,18 @@ def fetch_team_season_averages(season: int) -> dict:
 
     headers = {}
     api_key = os.environ.get("BALLDONTLIE_API_KEY")
+
     if api_key:
-    headers["Authorization"] = f"Bearer {api_key}"
+        headers["Authorization"] = f"Bearer {api_key}"
 
     r = requests.get(url, params=params, headers=headers, timeout=25)
     r.raise_for_status()
     return r.json()
 
+
 def normalize_team_name(name: str) -> str:
-    # Keep it simple; main.py uses Odds API team naming.
-    # We'll store both full name and abbreviation if present.
     return name.strip()
+
 
 def main():
     season = guess_season_year()
@@ -53,9 +55,10 @@ def main():
 
     teams = data.get("data", [])
     if not teams:
-        raise RuntimeError("No team season averages returned. API may be down or requires a key.")
+        raise RuntimeError(
+            "No team season averages returned. API may be down or requires a key."
+        )
 
-    # We store a clean mapping by team_id, and also a lookup by team name
     out = {
         "season": season,
         "updated_utc": datetime.now(timezone.utc).isoformat(),
@@ -64,13 +67,10 @@ def main():
     }
 
     for t in teams:
-        # The exact fields depend on the API response; we keep what matters
         team = t.get("team", {})
         team_id = team.get("id")
         team_name = team.get("full_name") or team.get("name") or ""
 
-        # Common advanced fields often include: pace, off_rtg, def_rtg, net_rtg
-        # We store whatever exists.
         row = {
             "team_id": team_id,
             "team_name": team_name,
@@ -87,13 +87,16 @@ def main():
         if team_name:
             out["by_team_name"][normalize_team_name(team_name)] = row
 
-    # ensure folder exists (GitHub actions)
     os.makedirs("data", exist_ok=True)
 
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
 
-    print(f"Saved team features to {OUT_PATH} (season {season}) with {len(out['by_team_name'])} teams.")
+    print(
+        f"Saved team features to {OUT_PATH} "
+        f"(season {season}) with {len(out['by_team_name'])} teams."
+    )
+
 
 if __name__ == "__main__":
     main()

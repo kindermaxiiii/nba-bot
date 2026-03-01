@@ -6,16 +6,23 @@ import requests
 
 
 OUT_PATH = "data/team_features.json"
-
-# ✅ Nouveau endpoint balldontlie (NBA v1)
 BASE_URL = "https://api.balldontlie.io/nba/v1/teams"
 
 
 def fetch_all_teams() -> list:
     """
-    Récupère toutes les équipes via l'API balldontlie.
-    (On gère la pagination au cas où.)
+    Récupère toutes les équipes via l'API balldontlie (NBA v1).
+    Requiert une clé API : BALLDONTLIE_API_KEY.
     """
+    api_key = os.environ.get("BALLDONTLIE_API_KEY")
+    if not api_key:
+        raise RuntimeError("Missing BALLDONTLIE_API_KEY env var (GitHub Secret).")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    }
+
     teams = []
     cursor = None
 
@@ -24,7 +31,7 @@ def fetch_all_teams() -> list:
         if cursor:
             params["cursor"] = cursor
 
-        r = requests.get(BASE_URL, params=params, timeout=30)
+        r = requests.get(BASE_URL, headers=headers, params=params, timeout=30)
         r.raise_for_status()
         payload = r.json()
 
@@ -39,7 +46,7 @@ def fetch_all_teams() -> list:
 
 
 def main():
-    print("Fetching teams from balldontlie (stable endpoint)...")
+    print("Fetching teams from balldontlie (NBA v1)...")
 
     teams = fetch_all_teams()
     if not teams:
@@ -51,12 +58,12 @@ def main():
     }
 
     for t in teams:
-        name = t.get("full_name") or t.get("name")
+        name = (t.get("full_name") or t.get("name") or "").strip()
         if not name:
             continue
 
-        out["by_team_name"][name.strip()] = {
-            "team_name": name.strip(),
+        out["by_team_name"][name] = {
+            "team_name": name,
             "games": None,
             "pace": None,
             "off_rtg": None,

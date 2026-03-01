@@ -27,6 +27,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Build team features (pace/ratings)
+        env:
+          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
         run: python build_team_features.py
 
       - name: Run bot

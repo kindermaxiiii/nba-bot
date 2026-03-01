@@ -1,0 +1,33 @@
+name: NBA Bot
+
+on:
+  schedule:
+    # 16:30 UTC = 17:30 Paris (hiver)
+    - cron: "30 16 * * *"
+    # 21:30 UTC = 22:30 Paris (hiver)
+    - cron: "30 21 * * *"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
+          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
+          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
+        run: python main.py

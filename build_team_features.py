@@ -1,79 +1,66 @@
 import json
 import os
-import requests
 from datetime import datetime, timezone
 
-BASE_URL = "https://api.balldontlie.io/nba/v1"
+from nba_api.stats.endpoints import leaguedashteamstats
+
+
 OUT_PATH = "data/team_features.json"
 
 
-def guess_season_year() -> int:
+def season_str_from_today() -> str:
+    """
+    NBA season format for nba_api: '2024-25'
+    If month < 8 => season started previous year.
+    """
     now = datetime.now(timezone.utc)
-    y = now.year
-    if now.month < 8:
-        return y - 1
-    return y
-
-
-def fetch_team_season_averages(season: int) -> dict:
-    url = f"{BASE_URL}/team_season_averages/general"
-    params = {"season": season, "season_type": "regular", "type": "advanced"}
-
-    headers = {}
-    api_key = os.environ.get("BALLDONTLIE_API_KEY")
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-        headers["X-API-KEY"] = api_key
-
-    r = requests.get(url, params=params, headers=headers, timeout=25)
-    r.raise_for_status()
-    return r.json()
-
-
-def normalize_team_name(name: str) -> str:
-    return name.strip()
+    start_year = now.year if now.month >= 8 else now.year - 1
+    end_year_2 = (start_year + 1) % 100
+    return f"{start_year}-{end_year_2:02d}"
 
 
 def main():
-    season = guess_season_year()
-    data = fetch_team_season_averages(season)
+    season = season_str_from_today()
 
-    teams = data.get("data", [])
-    if not teams:
-        raise RuntimeError("No team season averages returned. API may be down or requires a key.")
+    # Advanced team stats (includes PACE, OFF_RATING, DEF_RATING, NET_RATING)
+    resp = leaguedashteamstats.LeagueDashTeamStats(
+        season=season,
+        season_type_all_star="Regular Season",
+        per_mode_detailed="PerGame",
+        measure_type_detailed_defense="Advanced",
+    )
 
+    df = resp.get_data_frames()[0]
+    if df.empty:
+        raise RuntimeError("NBA API returned empty dataframe (possibly blocked temporarily).")
+
+    # Build mapping by team name
     out = {
         "season": season,
         "updated_utc": datetime.now(timezone.utc).isoformat(),
-        "by_team_id": {},
-        "by_team_name": {}
+        "by_team_name": {},
     }
 
-    for t in teams:
-        team = t.get("team", {})
-        team_id = team.get("id")
-        team_name = team.get("full_name") or team.get("name") or ""
+    # Typical columns: TEAM_NAME, GP, PACE, OFF_RATING, DEF_RATING, NET_RATING
+    for _, row in df.iterrows():
+        team_name = str(row.get("TEAM_NAME", "")).strip()
+        if not team_name:
+            continue
 
-        row = {
-            "team_id": team_id,
+        out["by_team_name"][team_name] = {
             "team_name": team_name,
-            "pace": t.get("pace"),
-            "off_rtg": t.get("off_rtg") or t.get("offensive_rating") or t.get("ortg"),
-            "def_rtg": t.get("def_rtg") or t.get("defensive_rating") or t.get("drtg"),
-            "net_rtg": t.get("net_rtg") or t.get("net_rating") or t.get("netrtg"),
-            "games": t.get("games") or t.get("gp")
+            "games": float(row.get("GP", 0)) if row.get("GP") is not None else None,
+            "pace": float(row.get("PACE")) if row.get("PACE") is not None else None,
+            "off_rtg": float(row.get("OFF_RATING")) if row.get("OFF_RATING") is not None else None,
+            "def_rtg": float(row.get("DEF_RATING")) if row.get("DEF_RATING") is not None else None,
+            "net_rtg": float(row.get("NET_RATING")) if row.get("NET_RATING") is not None else None,
         }
-
-        if team_id is not None:
-            out["by_team_id"][str(team_id)] = row
-        if team_name:
-            out["by_team_name"][normalize_team_name(team_name)] = row
 
     os.makedirs("data", exist_ok=True)
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
 
-    print(f"Saved team features to {OUT_PATH} (season {season}) with {len(out['by_team_name'])} teams.")
+    print(f"Saved team features to {OUT_PATH} for season {season} with {len(out['by_team_name'])} teams.")
 
 
 if __name__ == "__main__":

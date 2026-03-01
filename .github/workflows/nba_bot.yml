@@ -26,6 +26,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Build team features (pace/ratings)
+        env:
+          # Optionnel : si un jour tu ajoutes un Secret BALLDONTLIE_API_KEY, il sera utilisé
+          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
+        run: python build_team_features.py
+
       - name: Run bot
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
@@ -34,10 +40,11 @@ jobs:
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
         run: python main.py
 
-      - name: Commit state.json (save daily budget usage)
+      - name: Commit state + data cache
         run: |
           git config user.name "nba-bot"
           git config user.email "nba-bot@users.noreply.github.com"
-          git add state.json
-          git diff --cached --quiet || git commit -m "Update state.json"
+          git add state.json data/team_features.json
+          git diff --cached --quiet || git commit -m "Update state & team features"
+          git pull --rebase
           git push

@@ -1,0 +1,445 @@
+{
+  "updated_utc": "2026-03-01T23:47:52.458935+00:00",
+  "by_team_name": {
+    "Atlanta Hawks": {
+      "team_name": "Atlanta Hawks",
+      "team_id": 1,
+      "abbreviation": "ATL",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Boston Celtics": {
+      "team_name": "Boston Celtics",
+      "team_id": 2,
+      "abbreviation": "BOS",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Brooklyn Nets": {
+      "team_name": "Brooklyn Nets",
+      "team_id": 3,
+      "abbreviation": "BKN",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Charlotte Hornets": {
+      "team_name": "Charlotte Hornets",
+      "team_id": 4,
+      "abbreviation": "CHA",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Chicago Bulls": {
+      "team_name": "Chicago Bulls",
+      "team_id": 5,
+      "abbreviation": "CHI",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Cleveland Cavaliers": {
+      "team_name": "Cleveland Cavaliers",
+      "team_id": 6,
+      "abbreviation": "CLE",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Dallas Mavericks": {
+      "team_name": "Dallas Mavericks",
+      "team_id": 7,
+      "abbreviation": "DAL",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Denver Nuggets": {
+      "team_name": "Denver Nuggets",
+      "team_id": 50,
+      "abbreviation": "DN",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Detroit Pistons": {
+      "team_name": "Detroit Pistons",
+      "team_id": 9,
+      "abbreviation": "DET",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Golden State Warriors": {
+      "team_name": "Golden State Warriors",
+      "team_id": 10,
+      "abbreviation": "GSW",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Houston Rockets": {
+      "team_name": "Houston Rockets",
+      "team_id": 11,
+      "abbreviation": "HOU",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Indiana Pacers": {
+      "team_name": "Indiana Pacers",
+      "team_id": 12,
+      "abbreviation": "IND",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "LA Clippers": {
+      "team_name": "LA Clippers",
+      "team_id": 13,
+      "abbreviation": "LAC",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Los Angeles Lakers": {
+      "team_name": "Los Angeles Lakers",
+      "team_id": 14,
+      "abbreviation": "LAL",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Memphis Grizzlies": {
+      "team_name": "Memphis Grizzlies",
+      "team_id": 15,
+      "abbreviation": "MEM",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Miami Heat": {
+      "team_name": "Miami Heat",
+      "team_id": 16,
+      "abbreviation": "MIA",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Milwaukee Bucks": {
+      "team_name": "Milwaukee Bucks",
+      "team_id": 17,
+      "abbreviation": "MIL",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Minnesota Timberwolves": {
+      "team_name": "Minnesota Timberwolves",
+      "team_id": 18,
+      "abbreviation": "MIN",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "New Orleans Pelicans": {
+      "team_name": "New Orleans Pelicans",
+      "team_id": 19,
+      "abbreviation": "NOP",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "New York Knicks": {
+      "team_name": "New York Knicks",
+      "team_id": 20,
+      "abbreviation": "NYK",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Oklahoma City Thunder": {
+      "team_name": "Oklahoma City Thunder",
+      "team_id": 21,
+      "abbreviation": "OKC",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Orlando Magic": {
+      "team_name": "Orlando Magic",
+      "team_id": 22,
+      "abbreviation": "ORL",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Philadelphia 76ers": {
+      "team_name": "Philadelphia 76ers",
+      "team_id": 23,
+      "abbreviation": "PHI",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Phoenix Suns": {
+      "team_name": "Phoenix Suns",
+      "team_id": 24,
+      "abbreviation": "PHX",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Portland Trail Blazers": {
+      "team_name": "Portland Trail Blazers",
+      "team_id": 25,
+      "abbreviation": "POR",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Sacramento Kings": {
+      "team_name": "Sacramento Kings",
+      "team_id": 26,
+      "abbreviation": "SAC",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "San Antonio Spurs": {
+      "team_name": "San Antonio Spurs",
+      "team_id": 27,
+      "abbreviation": "SAS",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Toronto Raptors": {
+      "team_name": "Toronto Raptors",
+      "team_id": 28,
+      "abbreviation": "TOR",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Utah Jazz": {
+      "team_name": "Utah Jazz",
+      "team_id": 29,
+      "abbreviation": "UTA",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Washington Wizards": {
+      "team_name": "Washington Wizards",
+      "team_id": 30,
+      "abbreviation": "WAS",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Chicago Stags": {
+      "team_name": "Chicago Stags",
+      "team_id": 37,
+      "abbreviation": "CHS",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "St. Louis Bombers": {
+      "team_name": "St. Louis Bombers",
+      "team_id": 38,
+      "abbreviation": "BOM",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Cleveland Rebels": {
+      "team_name": "Cleveland Rebels",
+      "team_id": 39,
+      "abbreviation": "CLR",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Detroit Falcons": {
+      "team_name": "Detroit Falcons",
+      "team_id": 40,
+      "abbreviation": "DEF",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Toronto Huskies": {
+      "team_name": "Toronto Huskies",
+      "team_id": 41,
+      "abbreviation": "HUS",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Washington Capitols": {
+      "team_name": "Washington Capitols",
+      "team_id": 42,
+      "abbreviation": "WAS",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Providence Steamrollers": {
+      "team_name": "Providence Steamrollers",
+      "team_id": 43,
+      "abbreviation": "PRO",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Pittsburgh Ironmen": {
+      "team_name": "Pittsburgh Ironmen",
+      "team_id": 44,
+      "abbreviation": "PIT",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Baltimore Bullets": {
+      "team_name": "Baltimore Bullets",
+      "team_id": 45,
+      "abbreviation": "BAL",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Indianapolis Jets": {
+      "team_name": "Indianapolis Jets",
+      "team_id": 46,
+      "abbreviation": "JET",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Anderson Packers": {
+      "team_name": "Anderson Packers",
+      "team_id": 47,
+      "abbreviation": "AND",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Waterloo Hawks": {
+      "team_name": "Waterloo Hawks",
+      "team_id": 48,
+      "abbreviation": "WAT",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Indianapolis Olympians": {
+      "team_name": "Indianapolis Olympians",
+      "team_id": 49,
+      "abbreviation": "INO",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    },
+    "Sheboygan Redskins": {
+      "team_name": "Sheboygan Redskins",
+      "team_id": 51,
+      "abbreviation": "SHE",
+      "games": null,
+      "pace": null,
+      "off_rtg": null,
+      "def_rtg": null,
+      "net_rtg": null
+    }
+  }
+}

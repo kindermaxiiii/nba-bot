@@ -3,16 +3,11 @@ import os
 import requests
 from datetime import datetime, timezone
 
-# --- SOURCE STATS ---
 BASE_URL = "https://api.balldontlie.io/nba/v1"
 OUT_PATH = "data/team_features.json"
 
 
 def guess_season_year() -> int:
-    """
-    NBA season labeling often by start year (e.g., 2024 for 2024-25).
-    We'll use current UTC year, and if we're before August, use previous year.
-    """
     now = datetime.now(timezone.utc)
     y = now.year
     if now.month < 8:
@@ -21,25 +16,14 @@ def guess_season_year() -> int:
 
 
 def fetch_team_season_averages(season: int) -> dict:
-    """
-    Returns JSON from balldontlie.
-    If API key exists in GitHub Secret BALLDONTLIE_API_KEY,
-    it will be used automatically.
-    """
     url = f"{BASE_URL}/team_season_averages/general"
-
-    params = {
-        "season": season,
-        "season_type": "regular",
-        "type": "advanced"
-    }
+    params = {"season": season, "season_type": "regular", "type": "advanced"}
 
     headers = {}
-api_key = os.environ.get("BALLDONTLIE_API_KEY")
-
-if api_key:
-    headers["Authorization"] = f"Bearer {api_key}"
-    headers["X-API-KEY"] = api_key
+    api_key = os.environ.get("BALLDONTLIE_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+        headers["X-API-KEY"] = api_key
 
     r = requests.get(url, params=params, headers=headers, timeout=25)
     r.raise_for_status()
@@ -56,9 +40,7 @@ def main():
 
     teams = data.get("data", [])
     if not teams:
-        raise RuntimeError(
-            "No team season averages returned. API may be down or requires a key."
-        )
+        raise RuntimeError("No team season averages returned. API may be down or requires a key.")
 
     out = {
         "season": season,
@@ -84,19 +66,14 @@ def main():
 
         if team_id is not None:
             out["by_team_id"][str(team_id)] = row
-
         if team_name:
             out["by_team_name"][normalize_team_name(team_name)] = row
 
     os.makedirs("data", exist_ok=True)
-
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
 
-    print(
-        f"Saved team features to {OUT_PATH} "
-        f"(season {season}) with {len(out['by_team_name'])} teams."
-    )
+    print(f"Saved team features to {OUT_PATH} (season {season}) with {len(out['by_team_name'])} teams.")
 
 
 if __name__ == "__main__":

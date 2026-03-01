@@ -26,7 +26,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Build team features (pace/ratings)
+      # ✅ On passe la clé API ici
+      - name: Build team features
         env:
           BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
         run: python build_team_features.py

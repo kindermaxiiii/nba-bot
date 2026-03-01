@@ -1,7 +1,9 @@
 import json
 import os
+import time
 from datetime import datetime, timezone
 
+import requests
 from nba_api.stats.endpoints import leaguedashteamstats
 
 
@@ -9,39 +11,69 @@ OUT_PATH = "data/team_features.json"
 
 
 def season_str_from_today() -> str:
-    """
-    NBA season format for nba_api: '2024-25'
-    If month < 8 => season started previous year.
-    """
     now = datetime.now(timezone.utc)
     start_year = now.year if now.month >= 8 else now.year - 1
     end_year_2 = (start_year + 1) % 100
     return f"{start_year}-{end_year_2:02d}"
 
 
+def make_session() -> requests.Session:
+    """
+    stats.nba.com is picky: we mimic a browser.
+    """
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://www.nba.com",
+        "Referer": "https://www.nba.com/",
+        "Connection": "keep-alive",
+    })
+    return s
+
+
+def fetch_team_advanced(season: str, retries: int = 3, sleep_s: float = 2.0):
+    """
+    Retry wrapper for stats.nba.com calls.
+    """
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            sess = make_session()
+            # nba_api uses requests under the hood; we can pass our session
+            resp = leaguedashteamstats.LeagueDashTeamStats(
+                season=season,
+                season_type_all_star="Regular Season",
+                per_mode_detailed="PerGame",
+                measure_type_detailed_defense="Advanced",
+                timeout=60,               # important (seconds)
+                proxies=None,
+                headers=sess.headers      # inject browser-like headers
+            )
+            df = resp.get_data_frames()[0]
+            return df
+        except Exception as e:
+            last_err = e
+            print(f"[attempt {attempt}/{retries}] NBA stats fetch failed: {e}")
+            if attempt < retries:
+                time.sleep(sleep_s * attempt)
+    raise last_err
+
+
 def main():
     season = season_str_from_today()
 
-    # Advanced team stats (includes PACE, OFF_RATING, DEF_RATING, NET_RATING)
-    resp = leaguedashteamstats.LeagueDashTeamStats(
-        season=season,
-        season_type_all_star="Regular Season",
-        per_mode_detailed="PerGame",
-        measure_type_detailed_defense="Advanced",
-    )
-
-    df = resp.get_data_frames()[0]
-    if df.empty:
+    df = fetch_team_advanced(season)
+    if df is None or df.empty:
         raise RuntimeError("NBA API returned empty dataframe (possibly blocked temporarily).")
 
-    # Build mapping by team name
     out = {
         "season": season,
         "updated_utc": datetime.now(timezone.utc).isoformat(),
         "by_team_name": {},
     }
 
-    # Typical columns: TEAM_NAME, GP, PACE, OFF_RATING, DEF_RATING, NET_RATING
     for _, row in df.iterrows():
         team_name = str(row.get("TEAM_NAME", "")).strip()
         if not team_name:

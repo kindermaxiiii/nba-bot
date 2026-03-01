@@ -6,17 +6,42 @@ import requests
 
 
 OUT_PATH = "data/team_features.json"
-BASE_URL = "https://balldontlie.io/api/v1/teams"
+
+# ✅ Nouveau endpoint balldontlie (NBA v1)
+BASE_URL = "https://api.balldontlie.io/nba/v1/teams"
+
+
+def fetch_all_teams() -> list:
+    """
+    Récupère toutes les équipes via l'API balldontlie.
+    (On gère la pagination au cas où.)
+    """
+    teams = []
+    cursor = None
+
+    while True:
+        params = {}
+        if cursor:
+            params["cursor"] = cursor
+
+        r = requests.get(BASE_URL, params=params, timeout=30)
+        r.raise_for_status()
+        payload = r.json()
+
+        teams.extend(payload.get("data", []))
+
+        meta = payload.get("meta") or {}
+        cursor = meta.get("next_cursor")
+        if not cursor:
+            break
+
+    return teams
 
 
 def main():
     print("Fetching teams from balldontlie (stable endpoint)...")
 
-    r = requests.get(BASE_URL, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-
-    teams = data.get("data", [])
+    teams = fetch_all_teams()
     if not teams:
         raise RuntimeError("No teams returned from balldontlie.")
 
@@ -26,12 +51,12 @@ def main():
     }
 
     for t in teams:
-        name = t.get("full_name")
+        name = t.get("full_name") or t.get("name")
         if not name:
             continue
 
-        out["by_team_name"][name] = {
-            "team_name": name,
+        out["by_team_name"][name.strip()] = {
+            "team_name": name.strip(),
             "games": None,
             "pace": None,
             "off_rtg": None,

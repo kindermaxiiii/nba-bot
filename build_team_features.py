@@ -41,14 +41,12 @@ def fetch_team_advanced(season: str, retries: int = 3, sleep_s: float = 2.0):
     for attempt in range(1, retries + 1):
         try:
             sess = make_session()
-            # nba_api uses requests under the hood; we can pass our session
             resp = leaguedashteamstats.LeagueDashTeamStats(
                 season=season,
                 season_type_all_star="Regular Season",
                 per_mode_detailed="PerGame",
                 measure_type_detailed_defense="Advanced",
                 timeout=60,               # important (seconds)
-                proxies=None,
                 headers=sess.headers      # inject browser-like headers
             )
             df = resp.get_data_frames()[0]

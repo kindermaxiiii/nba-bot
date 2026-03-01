@@ -35,9 +35,9 @@ def fetch_team_season_averages(season: int) -> dict:
     }
 
     headers = {}
-    api_key = os.environ.get("BALLDONTLIE_API_KEY")
+api_key = os.environ.get("BALLDONTLIE_API_KEY")
 
-    if api_key:
+if api_key:
     headers["Authorization"] = f"Bearer {api_key}"
     headers["X-API-KEY"] = api_key
 

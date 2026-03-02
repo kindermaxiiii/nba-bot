@@ -10,13 +10,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: nba-bot
-  cancel-in-progress: true
+  group: nba-bot-main
+  cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
       - name: Checkout (full history)
@@ -28,12 +28,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Build team features
         env:
@@ -43,52 +40,21 @@ jobs:
       - name: Run bot
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
           DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
           DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
         run: python main.py
 
-      - name: Commit + Push (conflict-proof)
-        shell: bash
+      - name: Commit + Push (safe)
         run: |
-          set -euo pipefail
-
           git config user.name "nba-bot"
           git config user.email "nba-bot@users.noreply.github.com"
 
-          # Ensure we're on main and up to date FIRST
-          git checkout main
-          git fetch origin main
-          git pull --rebase origin main || true
-
-          # Stage only the files we want to persist
           git add state.json data/team_features.json || true
-
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
+          git diff --cached --quiet && exit 0
 
           git commit -m "Update state & team features"
 
-          # Push with auto-resolve for JSON conflicts by preferring local (ours)
-          for i in 1 2 3 4 5; do
-            echo "Push attempt $i..."
-            if git push origin main; then
-              echo "Push OK"
-              exit 0
-            fi
-
-            echo "Push failed, trying rebase + auto-resolve..."
-            git fetch origin main
-
-            # Rebase; if conflict, keep OUR versions for these generated files
-            if ! git rebase origin/main; then
-              git checkout --ours state.json data/team_features.json || true
-              git add state.json data/team_features.json || true
-              git rebase --continue || (git rebase --abort && git reset --hard origin/main && exit 1)
-            fi
-          done
-
-          echo "Push failed after retries."
-          exit 1
+          git pull --rebase origin main
+          git push origin main

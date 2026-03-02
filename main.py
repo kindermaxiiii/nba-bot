@@ -16,7 +16,7 @@ ODDS_FORMAT = "decimal"
 DATE_FORMAT = "iso"
 
 # Thresholds (validé par toi)
-EDGE_THRESHOLD = 0.02  # 2%
+EDGE_THRESHOLD = 0.015  # 1.5%
 DEV_THRESHOLD = 0.02   # 2%
 MIN_BOOKMAKERS = 2
 

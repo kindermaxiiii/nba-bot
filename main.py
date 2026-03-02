@@ -15,10 +15,10 @@ MARKETS = "h2h,spreads,totals"
 ODDS_FORMAT = "decimal"
 DATE_FORMAT = "iso"
 
-# Thresholds (validé par toi)
+# Thresholds
 EDGE_THRESHOLD = 0.015  # 1.5%
-DEV_THRESHOLD = 0.02   # 2%
-MIN_BOOKMAKERS = 2
+DEV_THRESHOLD = 0.02    # 2%
+MIN_BOOKMAKERS = 2      # >=2 books
 
 # 1 seul NO_BET si aucun bet
 MAX_NO_BET_LOGS = 1
@@ -26,10 +26,10 @@ MAX_NO_BET_LOGS = 1
 # --------------------------
 # LOAD CONFIG + STATE
 # --------------------------
-with open("config.json", "r") as f:
+with open("config.json", "r", encoding="utf-8") as f:
     CONFIG = json.load(f)
 
-with open("state.json", "r") as f:
+with open("state.json", "r", encoding="utf-8") as f:
     STATE = json.load(f)
 
 BANKROLL = float(CONFIG["bankroll_eur"])
@@ -47,9 +47,11 @@ if STATE.get("date_utc") != today_utc:
         "prop_bets_sent": 0
     }
 
+
 def save_state():
-    with open("state.json", "w") as f:
-        json.dump(STATE, f, indent=2)
+    with open("state.json", "w", encoding="utf-8") as f:
+        json.dump(STATE, f, indent=2, ensure_ascii=False)
+
 
 def post_discord(webhook, title, description):
     if not webhook:
@@ -58,8 +60,10 @@ def post_discord(webhook, title, description):
     r = requests.post(webhook, json=data, timeout=15)
     r.raise_for_status()
 
+
 def implied_prob(odds: float) -> float:
     return 1.0 / odds if odds and odds > 0 else 0.0
+
 
 def median(values):
     values = sorted(values)
@@ -68,10 +72,12 @@ def median(values):
         return None
     if n % 2 == 1:
         return values[n // 2]
-    return (values[n//2 - 1] + values[n//2]) / 2
+    return (values[n // 2 - 1] + values[n // 2]) / 2
+
 
 def mean(values):
     return sum(values) / len(values) if values else None
+
 
 def stdev(values):
     if not values or len(values) < 2:
@@ -79,6 +85,7 @@ def stdev(values):
     m = mean(values)
     var = sum((x - m) ** 2 for x in values) / (len(values) - 1)
     return math.sqrt(var)
+
 
 def fetch_games():
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
@@ -92,6 +99,7 @@ def fetch_games():
     r = requests.get(url, params=params, timeout=25)
     r.raise_for_status()
     return r.json()
+
 
 def collect_market_entries(bookmakers, market_key):
     """
@@ -115,14 +123,17 @@ def collect_market_entries(bookmakers, market_key):
                 })
     return out
 
+
 def add_reject(stats, reason: str):
     stats["reject_reasons"][reason] = stats["reject_reasons"].get(reason, 0) + 1
+
 
 def add_near_miss(stats, item: dict):
     """
     Keep best near-misses across all games (we'll sort later).
     """
     stats["near_misses"].append(item)
+
 
 def pick_best_value_for_game(game, stats):
     """
@@ -148,7 +159,7 @@ def pick_best_value_for_game(game, stats):
     for outcome, entries in groups.items():
         odds_list = [x["price"] for x in entries]
         if len(odds_list) < MIN_BOOKMAKERS:
-            add_reject(stats, "Pas assez de bookmakers (>=3)")
+            add_reject(stats, f"Pas assez de bookmakers (>= {MIN_BOOKMAKERS})")
             continue
 
         stats["markets_tested"] += 1
@@ -159,7 +170,6 @@ def pick_best_value_for_game(game, stats):
         dev = (best_odds - med) / med
         edge = implied_prob(med) - implied_prob(best_odds)
 
-        # log near miss (even if refused)
         add_near_miss(stats, {
             "match": f"{away} @ {home}",
             "market": "MONEYLINE",
@@ -183,9 +193,9 @@ def pick_best_value_for_game(game, stats):
             })
         else:
             if edge < EDGE_THRESHOLD:
-                add_reject(stats, "Edge < 2%")
+                add_reject(stats, f"Edge < {EDGE_THRESHOLD*100:.1f}%")
             if dev < DEV_THRESHOLD:
-                add_reject(stats, "Dev vs médiane < 2%")
+                add_reject(stats, f"Dev vs médiane < {DEV_THRESHOLD*100:.0f}%")
 
     # -------- Totals --------
     totals_entries = collect_market_entries(bookmakers, "totals")
@@ -196,7 +206,7 @@ def pick_best_value_for_game(game, stats):
             entries = [e for e in totals_entries if e["name"] == side and e["point"] == main_total]
             odds_list = [x["price"] for x in entries]
             if len(odds_list) < MIN_BOOKMAKERS:
-                add_reject(stats, "Pas assez de bookmakers (>=3)")
+                add_reject(stats, f"Pas assez de bookmakers (>= {MIN_BOOKMAKERS})")
                 continue
 
             stats["markets_tested"] += 1
@@ -230,9 +240,9 @@ def pick_best_value_for_game(game, stats):
                 })
             else:
                 if edge < EDGE_THRESHOLD:
-                    add_reject(stats, "Edge < 2%")
+                    add_reject(stats, f"Edge < {EDGE_THRESHOLD*100:.1f}%")
                 if dev < DEV_THRESHOLD:
-                    add_reject(stats, "Dev vs médiane < 2%")
+                    add_reject(stats, f"Dev vs médiane < {DEV_THRESHOLD*100:.0f}%")
 
     # -------- Spreads --------
     spreads_entries = collect_market_entries(bookmakers, "spreads")
@@ -243,7 +253,7 @@ def pick_best_value_for_game(game, stats):
             entries = [e for e in spreads_entries if e["name"] == team and e["point"] == main_spread]
             odds_list = [x["price"] for x in entries]
             if len(odds_list) < MIN_BOOKMAKERS:
-                add_reject(stats, "Pas assez de bookmakers (>=3)")
+                add_reject(stats, f"Pas assez de bookmakers (>= {MIN_BOOKMAKERS})")
                 continue
 
             stats["markets_tested"] += 1
@@ -277,15 +287,16 @@ def pick_best_value_for_game(game, stats):
                 })
             else:
                 if edge < EDGE_THRESHOLD:
-                    add_reject(stats, "Edge < 2%")
+                    add_reject(stats, f"Edge < {EDGE_THRESHOLD*100:.1f}%")
                 if dev < DEV_THRESHOLD:
-                    add_reject(stats, "Dev vs médiane < 2%")
+                    add_reject(stats, f"Dev vs médiane < {DEV_THRESHOLD*100:.0f}%")
 
     if not candidates:
         return None
 
     candidates.sort(key=lambda x: (x["edge"], x["dev"]), reverse=True)
     return candidates[0]
+
 
 def allocate_stakes(num_bets, remaining_budget):
     """
@@ -319,16 +330,17 @@ def allocate_stakes(num_bets, remaining_budget):
 
     return stakes
 
+
 def format_rejects(reject_reasons: dict, top_n: int = 4) -> str:
     if not reject_reasons:
         return "- (aucune donnée)"
     items = sorted(reject_reasons.items(), key=lambda x: x[1], reverse=True)[:top_n]
     return "\n".join([f"- {k}: {v}" for k, v in items])
 
+
 def format_near_misses(near_misses: list, top_n: int = 3) -> str:
     if not near_misses:
         return "_Aucun near-miss._"
-    # keep only those with positive edge, otherwise it's noise
     near = [x for x in near_misses if x.get("edge") is not None and x["edge"] > 0]
     near.sort(key=lambda x: (x["edge"], x["dev"]), reverse=True)
     near = near[:top_n]
@@ -342,6 +354,7 @@ def format_near_misses(near_misses: list, top_n: int = 3) -> str:
             f"\n   Edge: **{x['edge']*100:.2f}%** | Dev: {x['dev']*100:.2f}%"
         )
     return "\n".join(lines)
+
 
 def main():
     if not ODDS_API_KEY:
@@ -382,22 +395,20 @@ def main():
             if remaining_budget <= 0:
                 reason.append("budget journalier 10% déjà utilisé")
             if not picks:
-                reason.append("aucune value détectée (seuil 2%)")
+                reason.append(f"aucune value détectée (seuil {EDGE_THRESHOLD*100:.1f}%)")
 
             desc = (
                 f"**Aucun bet team aujourd'hui.**\n"
                 f"Raison: {', '.join(reason)}\n\n"
                 f"**Résumé analyse**\n"
                 f"- Matchs analysés: **{stats['games_today']}**\n"
-                f"- Marchés testés (>=3 books): **{stats['markets_tested']}**\n\n"
+                f"- Marchés testés (>= {MIN_BOOKMAKERS} books): **{stats['markets_tested']}**\n\n"
                 f"**Refus principaux**\n{format_rejects(stats['reject_reasons'])}\n\n"
                 f"**Near miss (Top 3)**\n{format_near_misses(stats['near_misses'])}\n\n"
                 f"Budget jour: **{DAILY_BUDGET:.2f}€** | Déjà utilisé: **{STATE['daily_spent_eur']:.2f}€**"
             )
-
             post_discord(LOG_WEBHOOK, "❌ NO BET", desc)
 
-        # Props channel message (clean)
         if PROPS_WEBHOOK:
             post_discord(
                 PROPS_WEBHOOK,
@@ -417,23 +428,23 @@ def main():
         if stake <= 0:
             continue
 
+        pct_bk = (stake / BANKROLL) * 100 if BANKROLL > 0 else 0.0
+
         msg = (
-    f"**Match:** {pick['match']}\n"
-    f"**Marché:** {pick['market']}\n"
-    f"**Sélection:** {pick['selection']}\n"
-    f"**Meilleure cote FR:** {pick['odds']:.2f} (**{pick['book']}**)\n"
-    f"**Mise (budget jour 10% BK):** {pct_bk:.2f}% BK ({stake:.2f}€)\n"
-    f"**Edge proxy:** {pick['edge']*100:.2f}% | **Dev vs médiane:** {pick['dev']*100:.2f}%\n"
-    f"**Budget jour:** {DAILY_BUDGET:.2f}€ | **Utilisé après bet:** {(STATE['daily_spent_eur'] + stake):.2f}€\n"
-    f"_Max 3 TEAM bets/jour. Si la cote bouge fortement avant ton clic, ne force pas._"
-)
+            f"**Match:** {pick['match']}\n"
+            f"**Marché:** {pick['market']}\n"
+            f"**Sélection:** {pick['selection']}\n"
+            f"**Meilleure cote FR:** {pick['odds']:.2f} (**{pick['book']}**)\n"
+            f"**Mise (budget jour 10% BK):** {pct_bk:.2f}% BK ({stake:.2f}€)\n"
+            f"**Edge proxy:** {pick['edge']*100:.2f}% | **Dev vs médiane:** {pick['dev']*100:.2f}%\n"
+            f"**Budget jour:** {DAILY_BUDGET:.2f}€ | **Utilisé après bet:** {(STATE['daily_spent_eur'] + stake):.2f}€\n"
+            f"_Max 3 TEAM bets/jour. Si la cote bouge fortement avant ton clic, ne force pas._"
         )
         post_discord(TEAM_WEBHOOK, "✅ NBA TEAM BET", msg)
 
-        STATE["daily_spent_eur"] = float(STATE["daily_spent_eur"]) + stake
+        STATE["daily_spent_eur"] = float(STATE["daily_spent_eur"]) + float(stake)
         STATE["team_bets_sent"] = int(STATE["team_bets_sent"]) + 1
 
-    # Clean props channel message (free mode)
     if PROPS_WEBHOOK:
         post_discord(
             PROPS_WEBHOOK,
@@ -442,6 +453,7 @@ def main():
         )
 
     save_state()
+
 
 if __name__ == "__main__":
     main()

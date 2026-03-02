@@ -164,7 +164,7 @@ def score_bet(edge_real: float, dev: float, books_used: int, market_type: str) -
     return max(0.0, min(100.0, edge_pts + dev_pts + book_pts + bonus))
 
 
-def analyze_two_way_market(
+def analyze_market_two_way(
     match: str,
     market_label: str,
     line: Optional[float],

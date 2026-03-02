@@ -115,22 +115,32 @@ def collect_market_entries(bookmakers, market_key):
                 })
     return out
 
-def pick_best_value_for_game(game):
+def add_reject(stats, reason: str):
+    stats["reject_reasons"][reason] = stats["reject_reasons"].get(reason, 0) + 1
+
+def add_near_miss(stats, item: dict):
+    """
+    Keep best near-misses across all games (we'll sort later).
+    """
+    stats["near_misses"].append(item)
+
+def pick_best_value_for_game(game, stats):
     """
     Analyse ML + spreads + totals via 'best vs median' proxy.
     Return best pick dict or None.
+    Also logs near-misses + reject reasons for NO BET reporting.
     """
     home = game["home_team"]
     away = game["away_team"]
     bookmakers = game.get("bookmakers", [])
     if not bookmakers:
+        add_reject(stats, "Aucune cote bookmaker")
         return None
 
     candidates = []
 
     # -------- Moneyline (h2h) --------
     h2h_entries = collect_market_entries(bookmakers, "h2h")
-    # group by outcome name (team)
     groups = {}
     for e in h2h_entries:
         groups.setdefault(e["name"], []).append(e)
@@ -138,12 +148,27 @@ def pick_best_value_for_game(game):
     for outcome, entries in groups.items():
         odds_list = [x["price"] for x in entries]
         if len(odds_list) < MIN_BOOKMAKERS:
+            add_reject(stats, "Pas assez de bookmakers (>=3)")
             continue
+
+        stats["markets_tested"] += 1
+
         med = median(odds_list)
         best = max(entries, key=lambda x: x["price"])
         best_odds = best["price"]
         dev = (best_odds - med) / med
         edge = implied_prob(med) - implied_prob(best_odds)
+
+        # log near miss (even if refused)
+        add_near_miss(stats, {
+            "match": f"{away} @ {home}",
+            "market": "MONEYLINE",
+            "selection": outcome,
+            "odds": best_odds,
+            "book": best["book"],
+            "edge": edge,
+            "dev": dev
+        })
 
         if edge >= EDGE_THRESHOLD and dev >= DEV_THRESHOLD:
             candidates.append({
@@ -156,10 +181,14 @@ def pick_best_value_for_game(game):
                 "dev": dev,
                 "match": f"{away} @ {home}"
             })
+        else:
+            if edge < EDGE_THRESHOLD:
+                add_reject(stats, "Edge < 2%")
+            if dev < DEV_THRESHOLD:
+                add_reject(stats, "Dev vs médiane < 2%")
 
     # -------- Totals --------
     totals_entries = collect_market_entries(bookmakers, "totals")
-    # Determine a "main line" by median of points available
     total_points = [e["point"] for e in totals_entries if e["point"] is not None]
     if total_points:
         main_total = median(sorted(total_points))
@@ -167,12 +196,26 @@ def pick_best_value_for_game(game):
             entries = [e for e in totals_entries if e["name"] == side and e["point"] == main_total]
             odds_list = [x["price"] for x in entries]
             if len(odds_list) < MIN_BOOKMAKERS:
+                add_reject(stats, "Pas assez de bookmakers (>=3)")
                 continue
+
+            stats["markets_tested"] += 1
+
             med = median(odds_list)
             best = max(entries, key=lambda x: x["price"])
             best_odds = best["price"]
             dev = (best_odds - med) / med
             edge = implied_prob(med) - implied_prob(best_odds)
+
+            add_near_miss(stats, {
+                "match": f"{away} @ {home}",
+                "market": "TOTAL",
+                "selection": f"{side} {main_total}",
+                "odds": best_odds,
+                "book": best["book"],
+                "edge": edge,
+                "dev": dev
+            })
 
             if edge >= EDGE_THRESHOLD and dev >= DEV_THRESHOLD:
                 candidates.append({
@@ -185,23 +228,41 @@ def pick_best_value_for_game(game):
                     "dev": dev,
                     "match": f"{away} @ {home}"
                 })
+            else:
+                if edge < EDGE_THRESHOLD:
+                    add_reject(stats, "Edge < 2%")
+                if dev < DEV_THRESHOLD:
+                    add_reject(stats, "Dev vs médiane < 2%")
 
     # -------- Spreads --------
     spreads_entries = collect_market_entries(bookmakers, "spreads")
     spread_points = [e["point"] for e in spreads_entries if e["point"] is not None]
     if spread_points:
         main_spread = median(sorted(spread_points))
-        # outcomes named by team
         for team in [home, away]:
             entries = [e for e in spreads_entries if e["name"] == team and e["point"] == main_spread]
             odds_list = [x["price"] for x in entries]
             if len(odds_list) < MIN_BOOKMAKERS:
+                add_reject(stats, "Pas assez de bookmakers (>=3)")
                 continue
+
+            stats["markets_tested"] += 1
+
             med = median(odds_list)
             best = max(entries, key=lambda x: x["price"])
             best_odds = best["price"]
             dev = (best_odds - med) / med
             edge = implied_prob(med) - implied_prob(best_odds)
+
+            add_near_miss(stats, {
+                "match": f"{away} @ {home}",
+                "market": "SPREAD",
+                "selection": f"{team} {main_spread:+}",
+                "odds": best_odds,
+                "book": best["book"],
+                "edge": edge,
+                "dev": dev
+            })
 
             if edge >= EDGE_THRESHOLD and dev >= DEV_THRESHOLD:
                 candidates.append({
@@ -214,11 +275,15 @@ def pick_best_value_for_game(game):
                     "dev": dev,
                     "match": f"{away} @ {home}"
                 })
+            else:
+                if edge < EDGE_THRESHOLD:
+                    add_reject(stats, "Edge < 2%")
+                if dev < DEV_THRESHOLD:
+                    add_reject(stats, "Dev vs médiane < 2%")
 
     if not candidates:
         return None
 
-    # Rank by edge then dev (simple & lisible)
     candidates.sort(key=lambda x: (x["edge"], x["dev"]), reverse=True)
     return candidates[0]
 
@@ -238,25 +303,45 @@ def allocate_stakes(num_bets, remaining_budget):
         splits = [0.4, 0.35, 0.25]
 
     stakes = []
-    # base on DAILY_BUDGET (not remaining) but cap to remaining
     planned = [DAILY_BUDGET * s for s in splits[:num_bets]]
     total_planned = sum(planned)
     if total_planned <= 0:
         return [0.0] * num_bets
 
-    # scale down if remaining_budget is smaller than planned sum
     scale = min(1.0, remaining_budget / total_planned)
 
     for x in planned:
         stakes.append(round(x * scale, 2))
 
-    # fix rounding drift (ensure sum <= remaining_budget)
     while sum(stakes) - remaining_budget > 0.001:
-        # subtract 0.01 from the largest stake until ok
         i = max(range(len(stakes)), key=lambda k: stakes[k])
         stakes[i] = round(max(0.0, stakes[i] - 0.01), 2)
 
     return stakes
+
+def format_rejects(reject_reasons: dict, top_n: int = 4) -> str:
+    if not reject_reasons:
+        return "- (aucune donnée)"
+    items = sorted(reject_reasons.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    return "\n".join([f"- {k}: {v}" for k, v in items])
+
+def format_near_misses(near_misses: list, top_n: int = 3) -> str:
+    if not near_misses:
+        return "_Aucun near-miss._"
+    # keep only those with positive edge, otherwise it's noise
+    near = [x for x in near_misses if x.get("edge") is not None and x["edge"] > 0]
+    near.sort(key=lambda x: (x["edge"], x["dev"]), reverse=True)
+    near = near[:top_n]
+    if not near:
+        return "_Aucun near-miss._"
+
+    lines = []
+    for i, x in enumerate(near, start=1):
+        lines.append(
+            f"{i}) {x['match']} — {x['market']} — **{x['selection']}** @ {x['odds']:.2f} ({x['book']})"
+            f"\n   Edge: **{x['edge']*100:.2f}%** | Dev: {x['dev']*100:.2f}%"
+        )
+    return "\n".join(lines)
 
 def main():
     if not ODDS_API_KEY:
@@ -268,13 +353,23 @@ def main():
     remaining_budget = max(0.0, DAILY_BUDGET - float(STATE["daily_spent_eur"]))
     remaining_team_slots = max(0, MAX_TEAM_PER_DAY - int(STATE["team_bets_sent"]))
 
+    # Stats for NO BET report
+    stats = {
+        "games_today": 0,
+        "markets_tested": 0,
+        "reject_reasons": {},
+        "near_misses": []
+    }
+
     # Collect best pick per game
     picks = []
     for g in games:
         g_date = parser.isoparse(g["commence_time"]).date()
         if g_date != today_date:
             continue
-        pick = pick_best_value_for_game(g)
+        stats["games_today"] += 1
+
+        pick = pick_best_value_for_game(g, stats)
         if pick:
             picks.append(pick)
 
@@ -289,11 +384,19 @@ def main():
             if not picks:
                 reason.append("aucune value détectée (seuil 2%)")
 
-            post_discord(
-                LOG_WEBHOOK,
-                "❌ NO BET",
-                "Aucun bet team.\nRaison: " + ", ".join(reason) + f"\nBudget jour: {DAILY_BUDGET:.2f}€ | Déjà utilisé: {STATE['daily_spent_eur']:.2f}€"
+            desc = (
+                f"**Aucun bet team aujourd'hui.**\n"
+                f"Raison: {', '.join(reason)}\n\n"
+                f"**Résumé analyse**\n"
+                f"- Matchs analysés: **{stats['games_today']}**\n"
+                f"- Marchés testés (>=3 books): **{stats['markets_tested']}**\n\n"
+                f"**Refus principaux**\n{format_rejects(stats['reject_reasons'])}\n\n"
+                f"**Near miss (Top 3)**\n{format_near_misses(stats['near_misses'])}\n\n"
+                f"Budget jour: **{DAILY_BUDGET:.2f}€** | Déjà utilisé: **{STATE['daily_spent_eur']:.2f}€**"
             )
+
+            post_discord(LOG_WEBHOOK, "❌ NO BET", desc)
+
         # Props channel message (clean)
         if PROPS_WEBHOOK:
             post_discord(

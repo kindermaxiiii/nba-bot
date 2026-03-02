@@ -1,83 +1,33 @@
 import os
 import json
-import math
-import time
 import requests
-from datetime import datetime, timezone, timedelta
-from dateutil import parser as dtparser
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+from dateutil import parser
 
-# =========================
+from odds_api import fetch_odds_with_fallback
+from engine import (
+    collect_market_lines,
+    pick_consensus_line,
+    analyze_two_way_market,
+    diversify_team_picks,
+    diversify_prop_picks,
+    allocate_stakes_fixed_splits,
+    median,
+)
+from formatting import format_team_pick, format_prop_pick, format_no_bet
+
+
+# ----------------------------
 # ENV
-# =========================
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
-BALLDONTLIE_API_KEY = os.environ.get("BALLDONTLIE_API_KEY")  # optionnel (injuries)
+# ----------------------------
 TEAM_WEBHOOK = os.environ.get("DISCORD_TEAM_WEBHOOK")
 PROPS_WEBHOOK = os.environ.get("DISCORD_PROPS_WEBHOOK")
 LOG_WEBHOOK = os.environ.get("DISCORD_LOG_WEBHOOK")
 
-# =========================
-# TIME / SLATE WINDOW
-# =========================
-TZ_PARIS = ZoneInfo("Europe/Paris")
-LOOKAHEAD_HOURS = 36          # fenêtre future
-PAST_GRACE_HOURS = 3          # inclure matchs qui viennent de démarrer
-
-# =========================
-# ODDS API
-# =========================
-ODDS_API_BASE = "https://api.the-odds-api.com/v4"
-SPORT_KEY = "basketball_nba"
-ODDS_FORMAT = "decimal"
-DATE_FORMAT = "iso"
-
-# Regions valides (The Odds API): us, us2, uk, au, eu
-REGION_CANDIDATES_TEAM = ["eu", "uk", "us", "us2", "au"]
-REGION_CANDIDATES_PROPS = ["us", "us2", "eu", "uk", "au"]
-
-TEAM_MARKETS = "h2h,spreads,totals"
-
-PROPS_MARKETS = ",".join([
-    "player_points",
-    "player_rebounds",
-    "player_assists",
-    "player_threes",
-    "player_points_rebounds_assists",
-    "player_points_rebounds",
-    "player_points_assists",
-    "player_rebounds_assists",
-])
-
-# =========================
-# THRESHOLDS
-# =========================
-TEAM_EDGE_THRESHOLD = 0.015   # 1.5%
-TEAM_DEV_THRESHOLD = 0.02     # 2%
-TEAM_MIN_BOOKS = 2
-
-PROPS_EDGE_THRESHOLD = 0.018  # 1.8%
-PROPS_DEV_THRESHOLD = 0.02    # 2%
-PROPS_MIN_BOOKS = 2
-
-MAX_NO_BET_LOGS = 1
-
-# Diversification
-MAX_ML_IN_PORTFOLIO = 2  # sur 3 picks team, on tente de limiter à 2 ML si possible
-MAX_1_PICK_PER_MATCH = True
-
-# Budget split (sur le budget journalier 10%)
-TEAM_BUDGET_SHARE = 0.70
-PROPS_BUDGET_SHARE = 0.30
-
-# FR books detection (pour afficher "FR best" si possible)
-FR_BOOK_KEYWORDS = [
-    "Winamax", "Betclic", "Unibet", "Parions Sport", "PMU", "ZEbet", "Bwin",
-    "PokerStars", "Vbet", "NetBet", "France"
-]
-
-# =========================
-# LOAD CONFIG + STATE
-# =========================
+# ----------------------------
+# CONFIG / STATE
+# ----------------------------
 with open("config.json", "r", encoding="utf-8") as f:
     CONFIG = json.load(f)
 
@@ -86,201 +36,263 @@ with open("state.json", "r", encoding="utf-8") as f:
 
 BANKROLL = float(CONFIG["bankroll_eur"])
 DAILY_BUDGET = BANKROLL * float(CONFIG["daily_budget_pct"])
-MAX_TEAM_PER_DAY = int(CONFIG["max_team_bets_per_day"])
+
+MAX_TEAM_PER_DAY = int(CONFIG.get("max_team_bets_per_day", 3))
 MAX_PROPS_PER_DAY = int(CONFIG.get("max_prop_bets_per_day", 3))
 
-today_utc = datetime.now(timezone.utc).date().isoformat()
+EDGE_THRESHOLD = float(CONFIG.get("edge_threshold", 0.015))  # 1.5% default
+DEV_THRESHOLD = float(CONFIG.get("dev_threshold", 0.02))     # 2% default
+MIN_BOOKMAKERS = int(CONFIG.get("min_bookmakers", 2))        # >=2 default
 
-def reset_state_for_day():
-    return {
-        "date_utc": today_utc,
-        "daily_spent_eur": 0.0,
-        "team_spent_eur": 0.0,
-        "props_spent_eur": 0.0,
-        "team_bets_sent": 0,
-        "prop_bets_sent": 0,
-        "props_scan_done": False,   # pour éviter de cramer des crédits 2x/jour
-        "last_regions_team": "",
-        "last_regions_props": ""
-    }
+TEAM_BUDGET_SHARE = float(CONFIG.get("team_budget_share", 0.60))
+PROPS_BUDGET_SHARE = float(CONFIG.get("props_budget_share", 0.40))
 
-if STATE.get("date_utc") != today_utc:
-    STATE = reset_state_for_day()
-else:
-    # compat si state.json ancien
-    STATE.setdefault("daily_spent_eur", 0.0)
-    STATE.setdefault("team_spent_eur", 0.0)
-    STATE.setdefault("props_spent_eur", 0.0)
-    STATE.setdefault("team_bets_sent", 0)
-    STATE.setdefault("prop_bets_sent", 0)
-    STATE.setdefault("props_scan_done", False)
-    STATE.setdefault("last_regions_team", "")
-    STATE.setdefault("last_regions_props", "")
+PREFER_FR_BOOKS = bool(CONFIG.get("prefer_fr_books", True))
+MAX_NO_BET_LOGS = 1
+
 
 def save_state():
     with open("state.json", "w", encoding="utf-8") as f:
         json.dump(STATE, f, indent=2, ensure_ascii=False)
 
-# =========================
-# HELPERS
-# =========================
-def post_discord(webhook, title, description):
+
+def post_discord(webhook: Optional[str], title: str, description: str):
     if not webhook:
         return
-    payload = {"embeds": [{"title": title, "description": description}]}
-    r = requests.post(webhook, json=payload, timeout=15)
+    data = {"embeds": [{"title": title, "description": description}]}
+    r = requests.post(webhook, json=data, timeout=15)
     r.raise_for_status()
 
-def implied_prob(odds: float) -> float:
-    return 1.0 / odds if odds and odds > 0 else 0.0
 
-def median(values):
-    values = sorted(values)
-    n = len(values)
-    if n == 0:
-        return None
-    if n % 2 == 1:
-        return values[n // 2]
-    return (values[n//2 - 1] + values[n//2]) / 2
+def reset_state_if_new_day():
+    today_utc = datetime.now(timezone.utc).date().isoformat()
+    if STATE.get("date_utc") != today_utc:
+        STATE.clear()
+        STATE.update(
+            {
+                "date_utc": today_utc,
+                "daily_spent_eur": 0.0,
+                "team_bets_sent": 0,
+                "prop_bets_sent": 0,
+            }
+        )
 
-def safe_float(x):
-    try:
-        return float(x)
-    except Exception:
-        return None
 
-def is_fr_book(book_title: str) -> bool:
-    if not book_title:
-        return False
-    return any(k.lower() in book_title.lower() for k in FR_BOOK_KEYWORDS)
+# ----------------------------
+# TEAM MARKETS
+# ----------------------------
+TEAM_MARKETS = "h2h,spreads,totals"
 
-def now_window_utc():
-    now = datetime.now(timezone.utc)
-    start = now - timedelta(hours=PAST_GRACE_HOURS)
-    end = now + timedelta(hours=LOOKAHEAD_HOURS)
-    return start, end
+# ----------------------------
+# PROPS MARKETS (Odds API keys)
+# ----------------------------
+# IMPORTANT:
+# Selon ton plan OddsAPI, certains markets props peuvent être refusés (422).
+# On gère ça proprement: si refus -> on log et props = off.
+PROPS_MARKETS_LIST = [
+    ("PROP PTS", "player_points"),
+    ("PROP REB", "player_rebounds"),
+    ("PROP AST", "player_assists"),
+    ("PROP 3PT", "player_threes"),
+    ("PROP PRA", "player_points_rebounds_assists"),
+    ("PROP PR", "player_points_rebounds"),
+    ("PROP PA", "player_points_assists"),
+    ("PROP RA", "player_rebounds_assists"),
+]
 
-def in_window(iso_dt: str, start_utc: datetime, end_utc: datetime) -> bool:
-    dt = dtparser.isoparse(iso_dt)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return start_utc <= dt <= end_utc
 
-# =========================
-# ODDS API CALLS
-# =========================
-def fetch_odds_for_markets(markets: str, region_candidates):
-    """
-    /sports/{sport_key}/odds
-    """
-    if not ODDS_API_KEY:
-        raise RuntimeError("ODDS_API_KEY missing (GitHub Secret).")
+def top_rejects_from_counter(counter: Dict[str, int], top_n: int = 6) -> List[str]:
+    if not counter:
+        return []
+    items = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    return [f"{k}: {v}" for k, v in items]
 
-    url = f"{ODDS_API_BASE}/sports/{SPORT_KEY}/odds"
-    last_err = None
 
-    for reg in region_candidates:
-        params = {
-            "apiKey": ODDS_API_KEY,
-            "regions": reg,
-            "markets": markets,
-            "oddsFormat": ODDS_FORMAT,
-            "dateFormat": DATE_FORMAT,
-        }
-        try:
-            r = requests.get(url, params=params, timeout=25)
-            if r.status_code == 422:
-                last_err = RuntimeError(f"422 regions={reg}: {r.text[:200]}")
-                continue
-            r.raise_for_status()
-            data = r.json()
-            return reg, data
-        except Exception as e:
-            last_err = e
+def make_near_miss_lines(near: List[Dict[str, Any]], top_n: int = 5) -> List[str]:
+    if not near:
+        return []
+    # keep positive edge only, sort by edge then score
+    near2 = [x for x in near if x.get("edge") is not None and x["edge"] > 0]
+    near2.sort(key=lambda x: (x.get("edge", 0), x.get("score", 0)), reverse=True)
+    near2 = near2[:top_n]
+    lines = []
+    for i, x in enumerate(near2, start=1):
+        sel = x.get("selection", "")
+        if x.get("player"):
+            sel = f"{x['player']} — {sel}"
+        lines.append(
+            f"{i}) {x['match']} — {x['market']} — **{sel}** @ {x['odds']:.2f} ({x['book']})\n"
+            f"   Edge: **{x['edge']*100:.2f}%** | Dev: {x['dev']*100:.2f}% | Score: {x.get('score',0):.0f}/100"
+        )
+    return lines
 
-    raise RuntimeError(f"All regions failed for markets={markets}. Last={last_err}")
 
-def fetch_events(region_hint="us"):
-    """
-    /sports/{sport_key}/events
-    (pas besoin de regions ici)
-    """
-    if not ODDS_API_KEY:
-        raise RuntimeError("ODDS_API_KEY missing (GitHub Secret).")
+def analyze_team_game(game: Dict[str, Any], stats: Dict[str, Any]) -> List[Dict[str, Any]]:
+    home = game["home_team"]
+    away = game["away_team"]
+    match = f"{away} @ {home}"
+    bookmakers = game.get("bookmakers", [])
 
-    url = f"{ODDS_API_BASE}/sports/{SPORT_KEY}/events"
-    params = {"apiKey": ODDS_API_KEY, "dateFormat": DATE_FORMAT}
-    r = requests.get(url, params=params, timeout=25)
-    r.raise_for_status()
-    return r.json()
+    if not bookmakers:
+        stats["reject_reasons"]["Aucune cote bookmaker"] = stats["reject_reasons"].get("Aucune cote bookmaker", 0) + 1
+        return []
 
-def fetch_event_odds(event_id: str, markets: str, region_candidates):
-    """
-    /sports/{sport_key}/events/{eventId}/odds  (required for props)
-    """
-    url = f"{ODDS_API_BASE}/sports/{SPORT_KEY}/events/{event_id}/odds"
-    last_err = None
+    candidates: List[Dict[str, Any]] = []
 
-    for reg in region_candidates:
-        params = {
-            "apiKey": ODDS_API_KEY,
-            "regions": reg,
-            "markets": markets,
-            "oddsFormat": ODDS_FORMAT,
-            "dateFormat": DATE_FORMAT,
-        }
-        try:
-            r = requests.get(url, params=params, timeout=25)
-            if r.status_code == 422:
-                last_err = RuntimeError(f"422 regions={reg}: {r.text[:200]}")
-                continue
-            r.raise_for_status()
-            return reg, r.json()
-        except Exception as e:
-            last_err = e
+    # h2h
+    h2h = collect_market_lines(bookmakers, "h2h")["lines"]
+    lk = pick_consensus_line(h2h)
+    if lk and lk in h2h:
+        outcomes = list(h2h[lk].keys())
+        if len(outcomes) >= 2:
+            a, b = outcomes[0], outcomes[1]
+            res = analyze_two_way_market(
+                match=match,
+                market_label="MONEYLINE",
+                line=None,
+                outcome_a=a,
+                outcome_b=b,
+                entries_a=h2h[lk].get(a, []),
+                entries_b=h2h[lk].get(b, []),
+                edge_threshold=EDGE_THRESHOLD,
+                dev_threshold=DEV_THRESHOLD,
+                min_books=MIN_BOOKMAKERS,
+                prefer_fr=PREFER_FR_BOOKS,
+            )
+            if res:
+                stats["markets_tested"] += 1
+                candidates.extend(res)
+            else:
+                stats["reject_reasons"]["ML: insuffisant (2-way/min books/edge/dev)"] = stats["reject_reasons"].get(
+                    "ML: insuffisant (2-way/min books/edge/dev)", 0
+                ) + 1
 
-    raise RuntimeError(f"All regions failed on event odds. Last={last_err}")
+    # totals
+    totals = collect_market_lines(bookmakers, "totals")["lines"]
+    lk = pick_consensus_line(totals)
+    if lk and lk in totals:
+        outcomes = list(totals[lk].keys())
+        if "Over" in outcomes and "Under" in outcomes:
+            line = float(lk)
+            res = analyze_two_way_market(
+                match=match,
+                market_label="TOTAL",
+                line=line,
+                outcome_a=f"Over {line}",
+                outcome_b=f"Under {line}",
+                entries_a=totals[lk].get("Over", []),
+                entries_b=totals[lk].get("Under", []),
+                edge_threshold=EDGE_THRESHOLD,
+                dev_threshold=DEV_THRESHOLD,
+                min_books=MIN_BOOKMAKERS,
+                prefer_fr=PREFER_FR_BOOKS,
+            )
+            if res:
+                stats["markets_tested"] += 1
+                candidates.extend(res)
+            else:
+                stats["reject_reasons"]["TOTAL: insuffisant (2-way/min books/edge/dev)"] = stats["reject_reasons"].get(
+                    "TOTAL: insuffisant (2-way/min books/edge/dev)", 0
+                ) + 1
 
-# =========================
-# BALLDONTLIE INJURIES (OPTIONAL)
-# =========================
-def fetch_injuries_balldontlie():
-    """
-    GET https://api.balldontlie.io/v1/player_injuries
-    Header: Authorization: YOUR_API_KEY  (pas Bearer)
-    """
-    if not BALLDONTLIE_API_KEY:
-        return {}
+    # spreads (canonical abs line)
+    spreads = collect_market_lines(bookmakers, "spreads")["lines"]
+    lk = pick_consensus_line(spreads)
+    if lk and lk in spreads:
+        line_abs = float(lk)
+        # need both teams present at that abs line (one +, one -) across books
+        if home in spreads[lk] and away in spreads[lk]:
+            # Note: entries store the point sign per team, we keep it in selection label
+            # We'll pick canonical selection strings using the median point sign seen.
+            def pick_point(entries):
+                pts = [e.get("point") for e in entries if e.get("point") is not None]
+                return median(pts) if pts else None
 
-    url = "https://api.balldontlie.io/v1/player_injuries"
-    headers = {"Authorization": BALLDONTLIE_API_KEY}
-    try:
-        r = requests.get(url, headers=headers, timeout=25)
-        if r.status_code in (401, 403):
-            return {"_error": f"injuries unauthorized ({r.status_code})"}
-        r.raise_for_status()
-        data = r.json()
-        injuries = data.get("data", [])
-        # count by team abbreviation if present
-        by_team = {}
-        for it in injuries:
-            team = it.get("team") or {}
-            abbr = team.get("abbreviation")
-            status = (it.get("status") or "").lower()
-            if not abbr:
-                continue
-            # count only meaningful statuses
-            if status in ("out", "doubtful", "questionable", "probable") or status:
-                by_team[abbr] = by_team.get(abbr, 0) + 1
-        return {"by_team": by_team, "count": len(injuries)}
-    except Exception as e:
-        return {"_error": str(e)}
+            home_pt = pick_point(spreads[lk][home])
+            away_pt = pick_point(spreads[lk][away])
 
-# =========================
-# MARKET PARSING
-# =========================
-def collect_market_entries(bookmakers, market_key):
-    out = []
+            # fallback if None
+            home_pt = home_pt if home_pt is not None else (-line_abs)
+            away_pt = away_pt if away_pt is not None else (+line_abs)
+
+            res = analyze_two_way_market(
+                match=match,
+                market_label="SPREAD",
+                line=line_abs,
+                outcome_a=f"{home} {home_pt:+}",
+                outcome_b=f"{away} {away_pt:+}",
+                entries_a=spreads[lk].get(home, []),
+                entries_b=spreads[lk].get(away, []),
+                edge_threshold=EDGE_THRESHOLD,
+                dev_threshold=DEV_THRESHOLD,
+                min_books=MIN_BOOKMAKERS,
+                prefer_fr=PREFER_FR_BOOKS,
+            )
+            if res:
+                stats["markets_tested"] += 1
+                # keep "line" field as signed for readability:
+                for c in res:
+                    # c["selection"] already includes sign
+                    pass
+                candidates.extend(res)
+            else:
+                stats["reject_reasons"]["SPREAD: insuffisant (2-way/min books/edge/dev)"] = stats["reject_reasons"].get(
+                    "SPREAD: insuffisant (2-way/min books/edge/dev)", 0
+                ) + 1
+        else:
+            stats["reject_reasons"]["SPREAD: pas 2 côtés (home+away)"] = stats["reject_reasons"].get(
+                "SPREAD: pas 2 côtés (home+away)", 0
+            ) + 1
+
+    # add near-miss candidates (already filtered by thresholds in analyze_two_way_market)
+    # For near-miss tracking, we keep top by score later: we can store the best per match.
+    return candidates
+
+
+def analyze_props_game(game: Dict[str, Any], stats: Dict[str, Any], market_label: str, market_key: str) -> List[Dict[str, Any]]:
+    home = game["home_team"]
+    away = game["away_team"]
+    match = f"{away} @ {home}"
+    bookmakers = game.get("bookmakers", [])
+
+    if not bookmakers:
+        stats["reject_reasons"]["Aucune cote bookmaker"] = stats["reject_reasons"].get("Aucune cote bookmaker", 0) + 1
+        return []
+
+    # For props, outcomes names are typically:
+    # - name: "Over"/"Under"
+    # - description: player name (varies by API, sometimes under "description")
+    # We'll normalize: outcome_key = "Over"/"Under", and player = description or "player"
+    lines_struct = collect_market_lines(bookmakers, market_key)
+    lines = lines_struct["lines"]
+    lk = pick_consensus_line(lines)
+    if not lk or lk not in lines:
+        stats["reject_reasons"][f"{market_label}: aucune line exploitable"] = stats["reject_reasons"].get(
+            f"{market_label}: aucune line exploitable", 0
+        ) + 1
+        return []
+
+    outcomes_map = lines[lk]
+
+    # We need to rebuild per player: in many OddsAPI props, the "name" is player and "description" is Over/Under
+    # But in other feeds it's reversed. We'll inspect entries by trying to see if keys are Over/Under.
+    keys = list(outcomes_map.keys())
+
+    # If keys contain Over/Under, it's standard
+    is_over_under_keys = ("Over" in keys and "Under" in keys)
+
+    candidates: List[Dict[str, Any]] = []
+
+    if is_over_under_keys:
+        # Here we do NOT know player name from keys; need to pull it from entry "description"
+        # Our collector doesn't store description; so we must fallback to direct parsing from bookmakers.
+        # => We'll do a prop-specific parse below (robust).
+        return candidates
+
+    # Robust prop parsing (directly from raw bookmakers):
+    # Build: players[player][line_key][Over/Under] -> entries
+    players: Dict[str, Dict[str, Dict[str, List[Dict[str, Any]]]]] = {}
+
     for b in bookmakers:
         book = b.get("title", "UnknownBook")
         for m in b.get("markets", []):
@@ -288,564 +300,278 @@ def collect_market_entries(bookmakers, market_key):
                 continue
             for o in m.get("outcomes", []):
                 name = o.get("name")
-                price = safe_float(o.get("price"))
+                price = o.get("price")
                 point = o.get("point")
-                desc = o.get("description")  # props: player
-                if name is None or price is None:
+                desc = o.get("description") or o.get("player") or o.get("participant")
+
+                if name is None or price is None or desc is None:
                     continue
-                out.append({
-                    "name": name,
-                    "price": price,
-                    "point": point,
-                    "description": desc,
-                    "book": book,
-                    "is_fr": is_fr_book(book),
-                })
-    return out
 
-def add_reject(stats, reason: str):
-    stats["reject_reasons"][reason] = stats["reject_reasons"].get(reason, 0) + 1
+                try:
+                    price = float(price)
+                except Exception:
+                    continue
 
-def add_near_miss(stats, item: dict):
-    stats["near_misses"].append(item)
+                try:
+                    point_f = float(point) if point is not None else None
+                except Exception:
+                    point_f = None
 
-# =========================
-# TEAM CANDIDATES
-# =========================
-def best_vs_median(entries):
-    odds_list = [e["price"] for e in entries]
-    if not odds_list:
-        return None
-    med = median(odds_list)
-    best_all = max(entries, key=lambda x: x["price"])
-    fr_entries = [e for e in entries if e.get("is_fr")]
-    best_fr = max(fr_entries, key=lambda x: x["price"]) if fr_entries else None
-    return med, best_all, best_fr, len(odds_list)
+                # determine OU
+                ou = None
+                if str(name).lower() in ["over", "under"]:
+                    ou = str(name)
+                else:
+                    # sometimes name is player, and description is Over/Under
+                    if str(desc).lower() in ["over", "under"]:
+                        ou = str(desc)
+                        desc = str(name)  # player
+                    else:
+                        continue
 
-def candidate_moneyline(game, stats):
-    home = game["home_team"]
-    away = game["away_team"]
-    bookmakers = game.get("bookmakers", [])
-    if not bookmakers:
-        add_reject(stats, "ML: aucune cote bookmaker")
-        return None
+                line_key = f"{point_f}" if point_f is not None else "NA"
+                players.setdefault(str(desc), {}).setdefault(line_key, {}).setdefault(ou, []).append(
+                    {"price": price, "book": book, "is_fr": False, "point": point_f}
+                )
 
-    entries = collect_market_entries(bookmakers, "h2h")
-    groups = {}
-    for e in entries:
-        groups.setdefault(e["name"], []).append(e)
+    # choose a “best supported” (player, line) combo by entry count
+    best_player = None
+    best_line = None
+    best_cnt = -1
+    for pl, lines2 in players.items():
+        for lk2, ous in lines2.items():
+            cnt = sum(len(v) for v in ous.values())
+            if cnt > best_cnt:
+                best_cnt = cnt
+                best_player = pl
+                best_line = lk2
 
-    best_cand = None
-    for team_name, ents in groups.items():
-        if len(ents) < TEAM_MIN_BOOKS:
-            add_reject(stats, f"ML: pas assez de books (>= {TEAM_MIN_BOOKS})")
-            continue
-
-        stats["markets_tested"] += 1
-        res = best_vs_median(ents)
-        if not res:
-            continue
-        med, best_all, best_fr, nbooks = res
-        dev = (best_all["price"] - med) / med if med else 0.0
-        edge = implied_prob(med) - implied_prob(best_all["price"]) if med else 0.0
-
-        add_near_miss(stats, {
-            "match": f"{away} @ {home}",
-            "market": "MONEYLINE",
-            "selection": team_name,
-            "odds": best_all["price"],
-            "book": best_all["book"],
-            "edge": edge,
-            "dev": dev
-        })
-
-        if edge < TEAM_EDGE_THRESHOLD or dev < TEAM_DEV_THRESHOLD:
-            continue
-
-        cand = {
-            "match": f"{away} @ {home}",
-            "market": "MONEYLINE",
-            "selection": team_name,
-            "line": None,
-            "odds_best": best_all["price"],
-            "book_best": best_all["book"],
-            "odds_fr": (best_fr["price"] if best_fr else None),
-            "book_fr": (best_fr["book"] if best_fr else None),
-            "median_odds": med,
-            "books_used": nbooks,
-            "edge": edge,
-            "dev": dev,
-        }
-        if best_cand is None or (cand["edge"], cand["dev"]) > (best_cand["edge"], best_cand["dev"]):
-            best_cand = cand
-
-    return best_cand
-
-def candidate_spreads_or_totals(game, stats, market_key, market_label):
-    home = game["home_team"]
-    away = game["away_team"]
-    bookmakers = game.get("bookmakers", [])
-    if not bookmakers:
-        add_reject(stats, f"{market_label}: aucune cote bookmaker")
-        return None
-
-    entries = collect_market_entries(bookmakers, market_key)
-    if not entries:
-        add_reject(stats, f"{market_label}: pas de données")
-        return None
-
-    groups = {}
-    for e in entries:
-        groups.setdefault((e["name"], e["point"]), []).append(e)
-
-    best_cand = None
-    for (name, point), ents in groups.items():
-        if len(ents) < TEAM_MIN_BOOKS:
-            add_reject(stats, f"{market_label}: pas assez de books (>= {TEAM_MIN_BOOKS})")
-            continue
-
-        stats["markets_tested"] += 1
-        res = best_vs_median(ents)
-        if not res:
-            continue
-        med, best_all, best_fr, nbooks = res
-        dev = (best_all["price"] - med) / med if med else 0.0
-        edge = implied_prob(med) - implied_prob(best_all["price"]) if med else 0.0
-
-        if market_key == "totals":
-            selection = f"{name} {point}"
-        else:
-            try:
-                selection = f"{name} {float(point):+g}"
-            except Exception:
-                selection = f"{name} {point}"
-
-        add_near_miss(stats, {
-            "match": f"{away} @ {home}",
-            "market": market_label,
-            "selection": selection,
-            "odds": best_all["price"],
-            "book": best_all["book"],
-            "edge": edge,
-            "dev": dev
-        })
-
-        if edge < TEAM_EDGE_THRESHOLD or dev < TEAM_DEV_THRESHOLD:
-            continue
-
-        cand = {
-            "match": f"{away} @ {home}",
-            "market": market_label,
-            "selection": selection,
-            "line": point,
-            "odds_best": best_all["price"],
-            "book_best": best_all["book"],
-            "odds_fr": (best_fr["price"] if best_fr else None),
-            "book_fr": (best_fr["book"] if best_fr else None),
-            "median_odds": med,
-            "books_used": nbooks,
-            "edge": edge,
-            "dev": dev,
-        }
-        if best_cand is None or (cand["edge"], cand["dev"]) > (best_cand["edge"], best_cand["dev"]):
-            best_cand = cand
-
-    return best_cand
-
-def build_team_candidates_for_game(game, stats):
-    cands = []
-    ml = candidate_moneyline(game, stats)
-    if ml:
-        cands.append(ml)
-    tot = candidate_spreads_or_totals(game, stats, "totals", "TOTAL")
-    if tot:
-        cands.append(tot)
-    sp = candidate_spreads_or_totals(game, stats, "spreads", "SPREAD")
-    if sp:
-        cands.append(sp)
-    return cands
-
-# =========================
-# PROPS CANDIDATES (EVENT ODDS)
-# =========================
-def prop_label(key: str) -> str:
-    return {
-        "player_points": "PTS",
-        "player_rebounds": "REB",
-        "player_assists": "AST",
-        "player_threes": "3PM",
-        "player_points_rebounds_assists": "PRA",
-        "player_points_rebounds": "PR",
-        "player_points_assists": "PA",
-        "player_rebounds_assists": "RA",
-    }.get(key, key)
-
-def build_prop_candidates_from_event_odds(event_odds_json, match_str, stats):
-    """
-    event_odds_json usually contains: bookmakers -> markets -> outcomes
-    outcomes: name=Over/Under, point=line, description=player, price=odds
-    """
-    bookmakers = event_odds_json.get("bookmakers", [])
-    if not bookmakers:
-        add_reject(stats, "PROPS: aucune donnée bookmaker")
+    if not best_player or not best_line:
+        stats["reject_reasons"][f"{market_label}: parsing vide"] = stats["reject_reasons"].get(f"{market_label}: parsing vide", 0) + 1
         return []
 
-    all_cands = []
-
-    for mkey in PROPS_MARKETS.split(","):
-        entries = collect_market_entries(bookmakers, mkey)
-        if not entries:
-            continue
-
-        groups = {}
-        for e in entries:
-            side = e.get("name")
-            point = e.get("point")
-            player = e.get("description") or ""
-            if side not in ("Over", "Under"):
-                continue
-            if point is None or not player:
-                continue
-            groups.setdefault((player, mkey, side, point), []).append(e)
-
-        for (player, mk, side, point), ents in groups.items():
-            if len(ents) < PROPS_MIN_BOOKS:
-                add_reject(stats, f"PROPS: pas assez de books (>= {PROPS_MIN_BOOKS})")
-                continue
-
-            stats["markets_tested"] += 1
-            res = best_vs_median(ents)
-            if not res:
-                continue
-            med, best_all, best_fr, nbooks = res
-            dev = (best_all["price"] - med) / med if med else 0.0
-            edge = implied_prob(med) - implied_prob(best_all["price"]) if med else 0.0
-
-            label = prop_label(mk)
-            selection = f"{player} — {label} {side} {point}"
-
-            add_near_miss(stats, {
-                "match": match_str,
-                "market": f"PROP {label}",
-                "selection": selection,
-                "odds": best_all["price"],
-                "book": best_all["book"],
-                "edge": edge,
-                "dev": dev
-            })
-
-            if edge < PROPS_EDGE_THRESHOLD or dev < PROPS_DEV_THRESHOLD:
-                continue
-
-            all_cands.append({
-                "match": match_str,
-                "market": f"PROP {label}",
-                "selection": selection,
-                "player": player,
-                "line": point,
-                "side": side,
-                "odds_best": best_all["price"],
-                "book_best": best_all["book"],
-                "odds_fr": (best_fr["price"] if best_fr else None),
-                "book_fr": (best_fr["book"] if best_fr else None),
-                "median_odds": med,
-                "books_used": nbooks,
-                "edge": edge,
-                "dev": dev,
-            })
-
-    return all_cands
-
-# =========================
-# STAKES
-# =========================
-def allocate_stakes(num_bets, budget_amount):
-    if num_bets <= 0:
+    ous = players[best_player][best_line]
+    if "Over" not in ous or "Under" not in ous:
+        stats["reject_reasons"][f"{market_label}: pas 2 côtés"] = stats["reject_reasons"].get(f"{market_label}: pas 2 côtés", 0) + 1
         return []
-    if num_bets == 1:
-        splits = [1.0]
-    elif num_bets == 2:
-        splits = [0.6, 0.4]
+
+    line = float(best_line) if best_line != "NA" else None
+
+    res = analyze_two_way_market(
+        match=match,
+        market_label=market_label,
+        line=line,
+        outcome_a=f"{market_label.split()[-1]} Over {line}",
+        outcome_b=f"{market_label.split()[-1]} Under {line}",
+        entries_a=ous["Over"],
+        entries_b=ous["Under"],
+        edge_threshold=EDGE_THRESHOLD,
+        dev_threshold=DEV_THRESHOLD,
+        min_books=MIN_BOOKMAKERS,
+        prefer_fr=PREFER_FR_BOOKS,
+    )
+
+    # attach player + improve selection strings
+    for c in res:
+        c["player"] = best_player
+        # make selection readable:
+        if "Over" in c["selection"]:
+            c["selection"] = f"{market_label.split()[-1]} Over {line}"
+        elif "Under" in c["selection"]:
+            c["selection"] = f"{market_label.split()[-1]} Under {line}"
+
+    if res:
+        stats["markets_tested"] += 1
+        candidates.extend(res)
     else:
-        splits = [0.4, 0.35, 0.25]
+        stats["reject_reasons"][f"{market_label}: insuffisant (2-way/min books/edge/dev)"] = stats["reject_reasons"].get(
+            f"{market_label}: insuffisant (2-way/min books/edge/dev)", 0
+        ) + 1
 
-    stakes = [round(budget_amount * s, 2) for s in splits[:num_bets]]
-    while sum(stakes) - budget_amount > 0.001:
-        i = max(range(len(stakes)), key=lambda k: stakes[k])
-        stakes[i] = round(max(0.0, stakes[i] - 0.01), 2)
-    return stakes
+    return candidates
 
-def fmt_best_odds_line(pick: dict) -> str:
-    # show best overall + FR best if different
-    best = f"{pick['odds_best']:.2f} ({pick['book_best']})"
-    fr = pick.get("odds_fr")
-    frb = pick.get("book_fr")
-    if fr is not None and frb and (fr != pick["odds_best"] or frb != pick["book_best"]):
-        best += f"\n**FR best:** {fr:.2f} ({frb})"
-    return best
 
-# =========================
-# MAIN
-# =========================
 def main():
-    start_utc, end_utc = now_window_utc()
+    reset_state_if_new_day()
 
-    # ---- Injuries optional ----
-    injuries = fetch_injuries_balldontlie()
-    injuries_note = ""
-    if injuries.get("_error"):
-        injuries_note = f"Injuries: non dispo ({injuries['_error']})"
-    elif injuries.get("by_team"):
-        injuries_note = f"Injuries: OK ({injuries.get('count', 0)} entrées)"
+    today_date = datetime.now(timezone.utc).date()
 
-    # ---- TEAM odds ----
-    region_team, games = fetch_odds_for_markets(TEAM_MARKETS, REGION_CANDIDATES_TEAM)
-    STATE["last_regions_team"] = region_team
-
-    stats_team = {
-        "games_fetched": len(games),
-        "games_in_window": 0,
-        "markets_tested": 0,
-        "reject_reasons": {},
-        "near_misses": [],
-        "regions_used": region_team,
-    }
-
-    team_candidates = []
-    for g in games:
-        ct = g.get("commence_time")
-        if not ct:
-            continue
-        if not in_window(ct, start_utc, end_utc):
-            continue
-        stats_team["games_in_window"] += 1
-        team_candidates.extend(build_team_candidates_for_game(g, stats_team))
-
-    # ---- Select TEAM picks ----
+    remaining_budget_total = max(0.0, DAILY_BUDGET - float(STATE["daily_spent_eur"]))
     remaining_team_slots = max(0, MAX_TEAM_PER_DAY - int(STATE["team_bets_sent"]))
-    daily_team_budget = DAILY_BUDGET * TEAM_BUDGET_SHARE
-    remaining_team_budget = max(0.0, daily_team_budget - float(STATE["team_spent_eur"]))
+    remaining_props_slots = max(0, MAX_PROPS_PER_DAY - int(STATE["prop_bets_sent"]))
 
-    team_picks = []
-    if remaining_team_slots > 0 and remaining_team_budget > 0 and team_candidates:
-        team_candidates.sort(key=lambda x: (x["edge"], x["dev"]), reverse=True)
+    # Budget split
+    team_budget = remaining_budget_total * TEAM_BUDGET_SHARE
+    props_budget = remaining_budget_total * PROPS_BUDGET_SHARE
 
-        used_matches = set()
-        ml_count = 0
+    # ----------------------------
+    # FETCH TEAM ODDS
+    # ----------------------------
+    team_games, team_meta = fetch_odds_with_fallback(markets=TEAM_MARKETS)
+    regions_used = []
+    if team_meta.get("chosen_region"):
+        regions_used.append(team_meta["chosen_region"])
 
-        # Pass 1: respect ML cap + 1 pick per match
-        for cand in team_candidates:
-            if len(team_picks) >= remaining_team_slots:
-                break
-            if MAX_1_PICK_PER_MATCH and cand["match"] in used_matches:
-                continue
-            is_ml = (cand["market"] == "MONEYLINE")
-            if is_ml and ml_count >= MAX_ML_IN_PORTFOLIO and remaining_team_slots >= 3:
-                continue
-
-            team_picks.append(cand)
-            used_matches.add(cand["match"])
-            if is_ml:
-                ml_count += 1
-
-        # Pass 2: if not enough, allow ML
-        if len(team_picks) < remaining_team_slots:
-            for cand in team_candidates:
-                if len(team_picks) >= remaining_team_slots:
-                    break
-                if MAX_1_PICK_PER_MATCH and cand["match"] in used_matches:
-                    continue
-                if cand in team_picks:
-                    continue
-                team_picks.append(cand)
-                used_matches.add(cand["match"])
-
-    # ---- PROPS ----
-    remaining_props_slots = max(0, MAX_PROPS_PER_DAY - int(STATE.get("prop_bets_sent", 0)))
-    daily_props_budget = DAILY_BUDGET * PROPS_BUDGET_SHARE
-    remaining_props_budget = max(0.0, daily_props_budget - float(STATE.get("props_spent_eur", 0.0)))
-
-    stats_props = {
-        "events_in_window": 0,
-        "events_scanned": 0,
+    team_stats = {
+        "games_today": 0,
         "markets_tested": 0,
         "reject_reasons": {},
         "near_misses": [],
-        "regions_used": "",
     }
 
-    prop_picks = []
-    props_possible = True
+    team_candidates: List[Dict[str, Any]] = []
 
-    # IMPORTANT: scan props only once per day to save credits
-    if remaining_props_slots > 0 and remaining_props_budget > 0 and (not STATE.get("props_scan_done", False)):
-        try:
-            events = fetch_events()
-            # filter events in window
-            events_in_window = []
-            for ev in events:
-                ct = ev.get("commence_time")
-                if not ct:
+    for g in team_games:
+        g_date = parser.isoparse(g["commence_time"]).date()
+        if g_date != today_date:
+            continue
+        team_stats["games_today"] += 1
+        team_candidates.extend(analyze_team_game(g, team_stats))
+
+    # Keep near-miss from all candidates (even though they passed thresholds already, still useful)
+    team_stats["near_misses"] = sorted(team_candidates, key=lambda x: (x["score"], x["edge"]), reverse=True)[:25]
+
+    # Diversify + limit
+    team_picks = diversify_team_picks(team_candidates, max_picks=min(remaining_team_slots, 3), max_ml=2, one_pick_per_match=True)
+
+    # ----------------------------
+    # FETCH PROPS ODDS
+    # ----------------------------
+    props_stats = {
+        "games_today": 0,
+        "markets_tested": 0,
+        "reject_reasons": {},
+        "near_misses": [],
+        "notes": [],
+    }
+
+    prop_candidates: List[Dict[str, Any]] = []
+    props_regions_used = []
+
+    if remaining_props_slots > 0 and props_budget > 0:
+        # Try props markets in a single request first (faster).
+        # If plan rejects, we degrade gracefully per-market.
+        props_markets_joined = ",".join([k for _, k in PROPS_MARKETS_LIST])
+
+        props_games, props_meta = fetch_odds_with_fallback(markets=props_markets_joined)
+        if props_meta.get("chosen_region"):
+            props_regions_used.append(props_meta["chosen_region"])
+
+        # If empty, try per market (some plans allow some props but not all)
+        if not props_games:
+            props_stats["notes"].append("Props: request globale vide/refusée -> fallback par market.")
+            for label, key in PROPS_MARKETS_LIST:
+                g2, m2 = fetch_odds_with_fallback(markets=key)
+                if m2.get("chosen_region"):
+                    props_regions_used.append(m2["chosen_region"])
+                for gg in g2:
+                    g_date = parser.isoparse(gg["commence_time"]).date()
+                    if g_date != today_date:
+                        continue
+                    props_stats["games_today"] += 1
+                    prop_candidates.extend(analyze_props_game(gg, props_stats, label, key))
+        else:
+            # Parse the returned games for each prop key
+            for gg in props_games:
+                g_date = parser.isoparse(gg["commence_time"]).date()
+                if g_date != today_date:
                     continue
-                if in_window(ct, start_utc, end_utc):
-                    events_in_window.append(ev)
+                props_stats["games_today"] += 1
+                for label, key in PROPS_MARKETS_LIST:
+                    prop_candidates.extend(analyze_props_game(gg, props_stats, label, key))
 
-            stats_props["events_in_window"] = len(events_in_window)
+    props_stats["near_misses"] = sorted(prop_candidates, key=lambda x: (x["score"], x["edge"]), reverse=True)[:25]
 
-            # scan at most N events to control credits
-            MAX_EVENTS_SCAN = 8
-            events_in_window = events_in_window[:MAX_EVENTS_SCAN]
+    prop_picks = diversify_prop_picks(
+        prop_candidates,
+        max_picks=min(remaining_props_slots, 3),
+        one_pick_per_match=True,
+        one_pick_per_player=True,
+    )
 
-            used_players = set()
-            used_matches_props = set()
+    # ----------------------------
+    # NO BET LOGIC (TEAM + PROPS)
+    # ----------------------------
+    # Note: you asked "3 TEAM + 3 PROPS", but if no edges => NO BET in that channel.
+    # Also, if budget or slots already consumed => log reason.
 
-            all_prop_candidates = []
+    # TEAM no-bet
+    if (not team_picks) or remaining_team_slots <= 0 or team_budget <= 0:
+        if MAX_NO_BET_LOGS > 0 and LOG_WEBHOOK:
+            reason_parts = []
+            if remaining_team_slots <= 0:
+                reason_parts.append("limite TEAM bets/jour atteinte")
+            if team_budget <= 0:
+                reason_parts.append("budget TEAM (part) déjà utilisé")
+            if not team_picks:
+                reason_parts.append(f"aucune value TEAM (edge>={EDGE_THRESHOLD*100:.1f}% & dev>={DEV_THRESHOLD*100:.0f}%)")
 
-            for ev in events_in_window:
-                ev_id = ev.get("id")
-                home = ev.get("home_team")
-                away = ev.get("away_team")
-                match_str = f"{away} @ {home}"
-
-                if not ev_id:
-                    continue
-
-                # fetch event odds (props)
-                region_props, ev_odds = fetch_event_odds(ev_id, PROPS_MARKETS, REGION_CANDIDATES_PROPS)
-                stats_props["regions_used"] = region_props
-                STATE["last_regions_props"] = region_props
-                stats_props["events_scanned"] += 1
-
-                cands = build_prop_candidates_from_event_odds(ev_odds, match_str, stats_props)
-                all_prop_candidates.extend(cands)
-
-                # tiny sleep to be polite + reduce burst
-                time.sleep(0.2)
-
-            # rank candidates
-            all_prop_candidates.sort(key=lambda x: (x["edge"], x["dev"]), reverse=True)
-
-            for cand in all_prop_candidates:
-                if len(prop_picks) >= remaining_props_slots:
-                    break
-                player_key = (cand.get("player") or "").strip().lower()
-                if not player_key:
-                    continue
-                if player_key in used_players:
-                    continue
-                if MAX_1_PICK_PER_MATCH and cand["match"] in used_matches_props:
-                    continue
-
-                prop_picks.append(cand)
-                used_players.add(player_key)
-                used_matches_props.add(cand["match"])
-
-            STATE["props_scan_done"] = True
-
-        except Exception as e:
-            props_possible = False
-            add_reject(stats_props, f"PROPS fetch failed: {e}")
-            STATE["props_scan_done"] = True  # avoid retrying forever
-
-    # ---- NO BET / LOGS ----
-    if not team_picks:
-        if MAX_NO_BET_LOGS > 0:
-            reason = []
-            if remaining_team_slots == 0:
-                reason.append("limite TEAM bets/jour atteinte")
-            if remaining_team_budget <= 0:
-                reason.append("budget TEAM épuisé")
-            if stats_team["games_in_window"] == 0:
-                reason.append(f"0 match dans fenêtre {LOOKAHEAD_HOURS}h (filtre temps)")
-            if not team_candidates:
-                reason.append(f"aucune value TEAM (edge≥{TEAM_EDGE_THRESHOLD*100:.1f}% & dev≥{TEAM_DEV_THRESHOLD*100:.0f}%)")
-
-            desc = (
-                f"**Aucun bet TEAM.**\n"
-                f"Raison: {', '.join(reason)}\n\n"
-                f"**Résumé (TEAM)**\n"
-                f"- Regions: **{stats_team['regions_used']}**\n"
-                f"- Games fetched: **{stats_team['games_fetched']}**\n"
-                f"- Games window: **{stats_team['games_in_window']}**\n"
-                f"- Marchés testés (>= {TEAM_MIN_BOOKS} books): **{stats_team['markets_tested']}**\n"
-                f"- {injuries_note}\n\n"
-                f"Budget jour: **{DAILY_BUDGET:.2f}€** | Déjà utilisé: **{STATE['daily_spent_eur']:.2f}€**"
+            desc = format_no_bet(
+                title="❌ NO BET (TEAM)",
+                reason=", ".join(reason_parts) if reason_parts else "n/a",
+                regions_used=regions_used,
+                games_analyzed=team_stats["games_today"],
+                markets_tested=team_stats["markets_tested"],
+                top_rejects=top_rejects_from_counter(team_stats["reject_reasons"]),
+                near_miss_lines=make_near_miss_lines(team_stats["near_misses"], top_n=5),
+                daily_budget=DAILY_BUDGET,
+                daily_spent=float(STATE["daily_spent_eur"]),
             )
-            post_discord(LOG_WEBHOOK, "❌ NO BET (TEAM)", desc)
+            post_discord(LOG_WEBHOOK, "NBA NO BET LOG", desc)
 
-    # ---- SEND TEAM ----
-    if team_picks:
-        stakes = allocate_stakes(len(team_picks), min(remaining_team_budget, max(0.0, DAILY_BUDGET - float(STATE["daily_spent_eur"]))))
+    # PROPS no-bet message (clean)
+    if PROPS_WEBHOOK:
+        if (not prop_picks) or remaining_props_slots <= 0 or props_budget <= 0:
+            msg = "Pas de props envoyés (pas de value ou budget/slots)."
+            post_discord(PROPS_WEBHOOK, "ℹ️ Player Props", msg)
 
-        for pick, stake in zip(team_picks, stakes):
+    # If nothing to bet at all, save state and exit
+    if not team_picks and not prop_picks:
+        save_state()
+        return
+
+    # ----------------------------
+    # SEND TEAM BETS
+    # ----------------------------
+    if team_picks and TEAM_WEBHOOK and remaining_team_slots > 0 and team_budget > 0:
+        team_stakes = allocate_stakes_fixed_splits(team_budget, len(team_picks))
+        for pick, stake in zip(team_picks, team_stakes):
             if stake <= 0:
                 continue
-
-            pct_bk = (stake / BANKROLL) * 100 if BANKROLL > 0 else 0.0
-
-            msg = (
-                f"**Match:** {pick['match']}\n"
-                f"**Marché:** {pick['market']}\n"
-                + (f"**Line:** {pick['line']}\n" if pick.get("line") is not None else "")
-                + f"**Sélection:** {pick['selection']}\n"
-                f"**Best:** {fmt_best_odds_line(pick)}\n"
-                f"**Books utilisés (médiane):** {pick['books_used']} | **Cote médiane:** {pick['median_odds']:.2f}\n"
-                f"**Mise (budget jour 10%):** {pct_bk:.2f}% BK ({stake:.2f}€)\n"
-                f"**Edge proxy:** {pick['edge']*100:.2f}% | **Dev vs médiane:** {pick['dev']*100:.2f}%\n"
-                f"**Budget jour:** {DAILY_BUDGET:.2f}€ | **Utilisé après bet:** {(STATE['daily_spent_eur'] + stake):.2f}€\n"
-                f"_Diversification: max {MAX_ML_IN_PORTFOLIO} ML si possible. 1 pick/match: {MAX_1_PICK_PER_MATCH}._"
+            spent_after = float(STATE["daily_spent_eur"]) + float(stake)
+            msg = format_team_pick(
+                p=pick,
+                stake=stake,
+                bankroll=BANKROLL,
+                daily_budget=DAILY_BUDGET,
+                spent_after=spent_after,
             )
             post_discord(TEAM_WEBHOOK, "✅ NBA TEAM BET", msg)
-
-            STATE["daily_spent_eur"] = float(STATE["daily_spent_eur"]) + float(stake)
-            STATE["team_spent_eur"] = float(STATE["team_spent_eur"]) + float(stake)
+            STATE["daily_spent_eur"] = spent_after
             STATE["team_bets_sent"] = int(STATE["team_bets_sent"]) + 1
 
-    # ---- SEND PROPS ----
-    if PROPS_WEBHOOK:
-        if not prop_picks:
-            why = []
-            if remaining_props_slots == 0:
-                why.append("limite props/jour atteinte")
-            if remaining_props_budget <= 0:
-                why.append("budget props épuisé")
-            if not props_possible:
-                why.append("props indisponibles (plan/endpoint)")
-            if STATE.get("props_scan_done", False) and (not prop_picks):
-                why.append(f"aucune value props (edge≥{PROPS_EDGE_THRESHOLD*100:.1f}% & dev≥{PROPS_DEV_THRESHOLD*100:.0f}%)")
-
-            post_discord(
-                PROPS_WEBHOOK,
-                "ℹ️ NBA PLAYER PROPS",
-                f"Pas de props envoyés.\nRaison: {', '.join(why) if why else '—'}\n"
-                f"Events window: {stats_props.get('events_in_window', 0)} | scanned: {stats_props.get('events_scanned', 0)} | regions: {stats_props.get('regions_used','-')}"
+    # ----------------------------
+    # SEND PROPS BETS
+    # ----------------------------
+    if prop_picks and PROPS_WEBHOOK and remaining_props_slots > 0 and props_budget > 0:
+        props_stakes = allocate_stakes_fixed_splits(props_budget, len(prop_picks))
+        for pick, stake in zip(prop_picks, props_stakes):
+            if stake <= 0:
+                continue
+            spent_after = float(STATE["daily_spent_eur"]) + float(stake)
+            msg = format_prop_pick(
+                p=pick,
+                stake=stake,
+                bankroll=BANKROLL,
+                daily_budget=DAILY_BUDGET,
+                spent_after=spent_after,
             )
-        else:
-            stakes = allocate_stakes(len(prop_picks), min(remaining_props_budget, max(0.0, DAILY_BUDGET - float(STATE["daily_spent_eur"]))))
-
-            for pick, stake in zip(prop_picks, stakes):
-                if stake <= 0:
-                    continue
-                pct_bk = (stake / BANKROLL) * 100 if BANKROLL > 0 else 0.0
-
-                msg = (
-                    f"**Match:** {pick['match']}\n"
-                    f"**Marché:** {pick['market']}\n"
-                    f"**Sélection:** {pick['selection']}\n"
-                    f"**Best:** {fmt_best_odds_line(pick)}\n"
-                    f"**Books utilisés (médiane):** {pick['books_used']} | **Cote médiane:** {pick['median_odds']:.2f}\n"
-                    f"**Mise (budget jour 10%):** {pct_bk:.2f}% BK ({stake:.2f}€)\n"
-                    f"**Edge proxy:** {pick['edge']*100:.2f}% | **Dev vs médiane:** {pick['dev']*100:.2f}%\n"
-                    f"**Budget jour:** {DAILY_BUDGET:.2f}€ | **Utilisé après bet:** {(STATE['daily_spent_eur'] + stake):.2f}€\n"
-                    f"_Props: 1 pick par joueur & 1 pick par match (si possible)._"
-                )
-                post_discord(PROPS_WEBHOOK, "✅ NBA PLAYER PROP", msg)
-
-                STATE["daily_spent_eur"] = float(STATE["daily_spent_eur"]) + float(stake)
-                STATE["props_spent_eur"] = float(STATE["props_spent_eur"]) + float(stake)
-                STATE["prop_bets_sent"] = int(STATE.get("prop_bets_sent", 0)) + 1
+            post_discord(PROPS_WEBHOOK, "✅ NBA PLAYER PROP", msg)
+            STATE["daily_spent_eur"] = spent_after
+            STATE["prop_bets_sent"] = int(STATE["prop_bets_sent"]) + 1
 
     save_state()
+
 
 if __name__ == "__main__":
     main()

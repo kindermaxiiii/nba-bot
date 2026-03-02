@@ -18,7 +18,7 @@ DATE_FORMAT = "iso"
 # Thresholds (validé par toi)
 EDGE_THRESHOLD = 0.02  # 2%
 DEV_THRESHOLD = 0.02   # 2%
-MIN_BOOKMAKERS = 3
+MIN_BOOKMAKERS = 2
 
 # 1 seul NO_BET si aucun bet
 MAX_NO_BET_LOGS = 1

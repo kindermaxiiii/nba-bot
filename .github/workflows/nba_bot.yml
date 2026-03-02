@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: nba-bot
+  cancel-in-progress: false
+
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -22,11 +26,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ✅ On passe la clé API ici
       - name: Build team features
         env:
           BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
@@ -35,6 +39,7 @@ jobs:
       - name: Run bot
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
           DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
           DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
@@ -44,7 +49,13 @@ jobs:
         run: |
           git config user.name "nba-bot"
           git config user.email "nba-bot@users.noreply.github.com"
-          git add state.json data/team_features.json
-          git diff --cached --quiet || git commit -m "Update state & team features"
+
+          # Ajoute state + data (team_features + futurs caches)
+          git add state.json data/
+
+          # Commit seulement si changement
+          git diff --cached --quiet || git commit -m "Update state & data cache"
+
+          # Push robuste (rebase + retry)
           git pull --rebase
-          git push
+          git push || (sleep 2 && git pull --rebase && git push)

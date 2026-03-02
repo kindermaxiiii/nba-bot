@@ -190,8 +190,13 @@ def analyze_two_way_market(
     books_a = len({e["book"] for e in entries_a})
     books_b = len({e["book"] for e in entries_b})
 
-    if books_a < min_books or books_b < min_books:
-        return []
+    total_books = len({e["book"] for e in entries_a + entries_b})
+
+if total_books < min_books:
+    return []
+
+if books_a < 1 or books_b < 1:
+    return []
 
     med_a = median(odds_a)
     med_b = median(odds_b)

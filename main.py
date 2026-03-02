@@ -11,7 +11,7 @@ TEAM_WEBHOOK = os.environ.get("DISCORD_TEAM_WEBHOOK")
 PROPS_WEBHOOK = os.environ.get("DISCORD_PROPS_WEBHOOK")
 LOG_WEBHOOK = os.environ.get("DISCORD_LOG_WEBHOOK")
 
-REGIONS = "eu,uk"
+REGIONS = "eu"
 MARKETS = "h2h,spreads,totals,Q1"
 ODDS_FORMAT = "decimal"
 DATE_FORMAT = "iso"

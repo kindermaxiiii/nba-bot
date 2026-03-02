@@ -362,3 +362,87 @@ def allocate_stakes_fixed_splits(total_budget: float, n: int) -> List[float]:
         stakes[i] = round(max(0.0, stakes[i] - 0.01), 2)
 
     return stakes
+
+
+
+def analyze_market_two_way_with_diagnostics(
+    match: str,
+    market_label: str,
+    line: Optional[float],
+    outcome_a: str,
+    outcome_b: str,
+    entries_a: List[Dict[str, Any]],
+    entries_b: List[Dict[str, Any]],
+    prefer_fr: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Retourne TOUJOURS 2 objets (A et B) avec edge/dev/fair_prob/etc
+    même si ça ne passe pas les thresholds. Sert pour near-miss + logs.
+    """
+    if not entries_a or not entries_b:
+        return []
+
+    total_books = len({e["book"] for e in (entries_a + entries_b)})
+    odds_a = [e["price"] for e in entries_a]
+    odds_b = [e["price"] for e in entries_b]
+
+    med_a = median(odds_a)
+    med_b = median(odds_b)
+    if med_a is None or med_b is None or med_a <= 0 or med_b <= 0:
+        return []
+
+    fair_a, fair_b = compute_no_vig_fair_probs(med_a, med_b)
+
+    best_all_a = best_price(entries_a)
+    best_all_b = best_price(entries_b)
+    if best_all_a is None or best_all_b is None:
+        return []
+
+    best_fr_a = best_fr_price(entries_a)
+    best_fr_b = best_fr_price(entries_b)
+
+    chosen_a = best_fr_a if (prefer_fr and best_fr_a) else best_all_a
+    chosen_b = best_fr_b if (prefer_fr and best_fr_b) else best_all_b
+
+    edge_a = fair_a - implied_prob(chosen_a["price"])
+    edge_b = fair_b - implied_prob(chosen_b["price"])
+
+    dev_a = (chosen_a["price"] - med_a) / med_a if med_a > 0 else 0.0
+    dev_b = (chosen_b["price"] - med_b) / med_b if med_b > 0 else 0.0
+
+    a = {
+        "match": match,
+        "market": market_label,
+        "line": line,
+        "selection": outcome_a,
+        "odds": chosen_a["price"],
+        "book": chosen_a["book"],
+        "best_is_fr": bool(chosen_a.get("is_fr")),
+        "fr_best": best_fr_a["price"] if best_fr_a else None,
+        "fr_best_book": best_fr_a["book"] if best_fr_a else None,
+        "fair_prob": fair_a,
+        "edge": edge_a,
+        "dev": dev_a,
+        "median_odds": med_a,
+        "books_used": total_books,
+        "score": score_bet(edge_a, dev_a, total_books, market_label),
+    }
+    b = {
+        "match": match,
+        "market": market_label,
+        "line": line,
+        "selection": outcome_b,
+        "odds": chosen_b["price"],
+        "book": chosen_b["book"],
+        "best_is_fr": bool(chosen_b.get("is_fr")),
+        "fr_best": best_fr_b["price"] if best_fr_b else None,
+        "fr_best_book": best_fr_b["book"] if best_fr_b else None,
+        "fair_prob": fair_b,
+        "edge": edge_b,
+        "dev": dev_b,
+        "median_odds": med_b,
+        "books_used": total_books,
+        "score": score_bet(edge_b, dev_b, total_books, market_label),
+    }
+
+    return [a, b]

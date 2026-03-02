@@ -129,10 +129,71 @@ def add_reject(stats, reason: str):
 
 
 def add_near_miss(stats, item: dict):
-    """
-    Keep best near-misses across all games (we'll sort later).
-    """
     stats["near_misses"].append(item)
+
+
+# --------------------------
+# NEW: MULTI-LINE HELPERS
+# --------------------------
+def compute_candidate_from_entries(entries, market, selection, match):
+    odds_list = [x["price"] for x in entries if x.get("price")]
+    if len(odds_list) < MIN_BOOKMAKERS:
+        return None
+
+    med = median(odds_list)
+    if not med:
+        return None
+
+    best = max(entries, key=lambda x: x["price"])
+    best_odds = float(best["price"])
+    dev = (best_odds - med) / med
+    edge = implied_prob(med) - implied_prob(best_odds)
+
+    return {
+        "market": market,
+        "selection": selection,
+        "line": best.get("point"),
+        "odds": best_odds,
+        "book": best.get("book", "UnknownBook"),
+        "edge": edge,
+        "dev": dev,
+        "match": match,
+        "books": len(odds_list),
+        "median_odds": med,
+    }
+
+
+def best_candidate_across_lines(entries, market, match, make_selection_fn):
+    # group by (name, point)
+    groups = {}
+    for e in entries:
+        name = e.get("name")
+        point = e.get("point")
+        if name is None:
+            continue
+        key = (name, point)
+        groups.setdefault(key, []).append(e)
+
+    candidates = []
+    for (name, point), group in groups.items():
+        selection = make_selection_fn(point, name)
+        if not selection:
+            continue
+
+        cand = compute_candidate_from_entries(
+            group,
+            market=market,
+            selection=selection,
+            match=match
+        )
+        if cand:
+            candidates.append(cand)
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: (x["edge"], x["dev"], x["books"]), reverse=True)
+    return candidates[0]
 
 
 def pick_best_value_for_game(game, stats):
@@ -143,6 +204,8 @@ def pick_best_value_for_game(game, stats):
     """
     home = game["home_team"]
     away = game["away_team"]
+    match_str = f"{away} @ {home}"
+
     bookmakers = game.get("bookmakers", [])
     if not bookmakers:
         add_reject(stats, "Aucune cote bookmaker")
@@ -165,13 +228,16 @@ def pick_best_value_for_game(game, stats):
         stats["markets_tested"] += 1
 
         med = median(odds_list)
+        if not med:
+            continue
+
         best = max(entries, key=lambda x: x["price"])
         best_odds = best["price"]
         dev = (best_odds - med) / med
         edge = implied_prob(med) - implied_prob(best_odds)
 
         add_near_miss(stats, {
-            "match": f"{away} @ {home}",
+            "match": match_str,
             "market": "MONEYLINE",
             "selection": outcome,
             "odds": best_odds,
@@ -189,112 +255,82 @@ def pick_best_value_for_game(game, stats):
                 "book": best["book"],
                 "edge": edge,
                 "dev": dev,
-                "match": f"{away} @ {home}"
+                "match": match_str
             })
         else:
             if edge < EDGE_THRESHOLD:
                 add_reject(stats, f"Edge < {EDGE_THRESHOLD*100:.1f}%")
             if dev < DEV_THRESHOLD:
-                add_reject(stats, f"Dev vs médiane < {DEV_THRESHOLD*100:.0f}%")
+                add_reject(stats, f"Dev vs médiane < {DEV_THRESHOLD*100:.1f}%")
 
-    # -------- Totals --------
+    # -------- Totals (ALL lines) --------
     totals_entries = collect_market_entries(bookmakers, "totals")
-    total_points = [e["point"] for e in totals_entries if e["point"] is not None]
-    if total_points:
-        main_total = median(sorted(total_points))
-        for side in ["Over", "Under"]:
-            entries = [e for e in totals_entries if e["name"] == side and e["point"] == main_total]
-            odds_list = [x["price"] for x in entries]
-            if len(odds_list) < MIN_BOOKMAKERS:
-                add_reject(stats, f"Pas assez de bookmakers (>= {MIN_BOOKMAKERS})")
-                continue
+    best_total = best_candidate_across_lines(
+        totals_entries,
+        market="TOTAL",
+        match=match_str,
+        make_selection_fn=lambda point, name: f"{name} {point}" if name in ("Over", "Under") and point is not None else None
+    )
 
-            stats["markets_tested"] += 1
+    if best_total:
+        stats["markets_tested"] += 1
+        add_near_miss(stats, {
+            "match": match_str,
+            "market": "TOTAL",
+            "selection": best_total["selection"],
+            "odds": best_total["odds"],
+            "book": best_total["book"],
+            "edge": best_total["edge"],
+            "dev": best_total["dev"]
+        })
 
-            med = median(odds_list)
-            best = max(entries, key=lambda x: x["price"])
-            best_odds = best["price"]
-            dev = (best_odds - med) / med
-            edge = implied_prob(med) - implied_prob(best_odds)
+        if best_total["edge"] >= EDGE_THRESHOLD and best_total["dev"] >= DEV_THRESHOLD:
+            candidates.append(best_total)
+        else:
+            if best_total["edge"] < EDGE_THRESHOLD:
+                add_reject(stats, f"Edge < {EDGE_THRESHOLD*100:.1f}%")
+            if best_total["dev"] < DEV_THRESHOLD:
+                add_reject(stats, f"Dev vs médiane < {DEV_THRESHOLD*100:.1f}%")
+    else:
+        # only log once per game to avoid spam
+        add_reject(stats, f"TOTAL: pas assez de books (>= {MIN_BOOKMAKERS})")
 
-            add_near_miss(stats, {
-                "match": f"{away} @ {home}",
-                "market": "TOTAL",
-                "selection": f"{side} {main_total}",
-                "odds": best_odds,
-                "book": best["book"],
-                "edge": edge,
-                "dev": dev
-            })
-
-            if edge >= EDGE_THRESHOLD and dev >= DEV_THRESHOLD:
-                candidates.append({
-                    "market": "TOTAL",
-                    "selection": f"{side} {main_total}",
-                    "line": main_total,
-                    "odds": best_odds,
-                    "book": best["book"],
-                    "edge": edge,
-                    "dev": dev,
-                    "match": f"{away} @ {home}"
-                })
-            else:
-                if edge < EDGE_THRESHOLD:
-                    add_reject(stats, f"Edge < {EDGE_THRESHOLD*100:.1f}%")
-                if dev < DEV_THRESHOLD:
-                    add_reject(stats, f"Dev vs médiane < {DEV_THRESHOLD*100:.0f}%")
-
-    # -------- Spreads --------
+    # -------- Spreads (ALL lines) --------
     spreads_entries = collect_market_entries(bookmakers, "spreads")
-    spread_points = [e["point"] for e in spreads_entries if e["point"] is not None]
-    if spread_points:
-        main_spread = median(sorted(spread_points))
-        for team in [home, away]:
-            entries = [e for e in spreads_entries if e["name"] == team and e["point"] == main_spread]
-            odds_list = [x["price"] for x in entries]
-            if len(odds_list) < MIN_BOOKMAKERS:
-                add_reject(stats, f"Pas assez de bookmakers (>= {MIN_BOOKMAKERS})")
-                continue
+    best_spread = best_candidate_across_lines(
+        spreads_entries,
+        market="SPREAD",
+        match=match_str,
+        make_selection_fn=lambda point, name: f"{name} {point:+}" if point is not None and name in (home, away) else None
+    )
 
-            stats["markets_tested"] += 1
+    if best_spread:
+        stats["markets_tested"] += 1
+        add_near_miss(stats, {
+            "match": match_str,
+            "market": "SPREAD",
+            "selection": best_spread["selection"],
+            "odds": best_spread["odds"],
+            "book": best_spread["book"],
+            "edge": best_spread["edge"],
+            "dev": best_spread["dev"]
+        })
 
-            med = median(odds_list)
-            best = max(entries, key=lambda x: x["price"])
-            best_odds = best["price"]
-            dev = (best_odds - med) / med
-            edge = implied_prob(med) - implied_prob(best_odds)
-
-            add_near_miss(stats, {
-                "match": f"{away} @ {home}",
-                "market": "SPREAD",
-                "selection": f"{team} {main_spread:+}",
-                "odds": best_odds,
-                "book": best["book"],
-                "edge": edge,
-                "dev": dev
-            })
-
-            if edge >= EDGE_THRESHOLD and dev >= DEV_THRESHOLD:
-                candidates.append({
-                    "market": "SPREAD",
-                    "selection": f"{team} {main_spread:+}",
-                    "line": main_spread,
-                    "odds": best_odds,
-                    "book": best["book"],
-                    "edge": edge,
-                    "dev": dev,
-                    "match": f"{away} @ {home}"
-                })
-            else:
-                if edge < EDGE_THRESHOLD:
-                    add_reject(stats, f"Edge < {EDGE_THRESHOLD*100:.1f}%")
-                if dev < DEV_THRESHOLD:
-                    add_reject(stats, f"Dev vs médiane < {DEV_THRESHOLD*100:.0f}%")
+        if best_spread["edge"] >= EDGE_THRESHOLD and best_spread["dev"] >= DEV_THRESHOLD:
+            candidates.append(best_spread)
+        else:
+            if best_spread["edge"] < EDGE_THRESHOLD:
+                add_reject(stats, f"Edge < {EDGE_THRESHOLD*100:.1f}%")
+            if best_spread["dev"] < DEV_THRESHOLD:
+                add_reject(stats, f"Dev vs médiane < {DEV_THRESHOLD*100:.1f}%")
+    else:
+        add_reject(stats, f"SPREAD: pas assez de books (>= {MIN_BOOKMAKERS})")
 
     if not candidates:
         return None
 
-    candidates.sort(key=lambda x: (x["edge"], x["dev"]), reverse=True)
+    # Rank by edge then dev then books (simple & lisible)
+    candidates.sort(key=lambda x: (x["edge"], x["dev"], x.get("books", 0)), reverse=True)
     return candidates[0]
 
 

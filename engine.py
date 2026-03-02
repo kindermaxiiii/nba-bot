@@ -44,11 +44,6 @@ def stdev(values: List[float]) -> float:
 
 
 def compute_no_vig_fair_probs(median_odds_a: float, median_odds_b: float) -> Tuple[float, float]:
-    """
-    Two-way market:
-      p_raw = 1/odds
-      fair = p_raw / (p_raw_a + p_raw_b)
-    """
     pa = implied_prob(median_odds_a)
     pb = implied_prob(median_odds_b)
     s = pa + pb
@@ -70,23 +65,8 @@ def best_fr_price(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 
 def collect_market_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> Dict[str, Any]:
     """
-    Build a structure to analyze a market.
-
-    Returns dict:
-      lines[line_key][outcome_key] = list of entries
-        entry = {price, book, is_fr, point}
-
-    line_key:
-      - h2h: "h2h"
-      - totals: f"{point}"
-      - spreads: f"{abs(point)}"  (canonical)
-      - props: f"{point}" if present else "NA"
-
-    outcome_key:
-      - h2h: team name
-      - totals: "Over" / "Under"
-      - spreads: team name (point stored in entry)
-      - props: outcome name (player / over / under etc.)
+    Generic collector:
+      lines[line_key][outcome_key] -> entries [{price, book, is_fr, point}]
     """
     lines: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
 
@@ -123,7 +103,7 @@ def collect_market_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> D
                     outcome_key = str(name)  # team
 
                 else:
-                    # props & others
+                    # default (not used for props here)
                     line_key = f"{point}" if point is not None else "NA"
                     outcome_key = str(name)
 
@@ -134,13 +114,49 @@ def collect_market_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> D
     return {"market": market_key, "lines": lines}
 
 
+def collect_player_prop_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> Dict[str, Any]:
+    """
+    OddsAPI player props outcomes are usually:
+      - name: "Over"/"Under"
+      - description: player name
+      - point: the line (e.g. 17.5)
+
+    Output:
+      props[player][line_key][side] -> entries
+    """
+    props: Dict[str, Dict[str, Dict[str, List[Dict[str, Any]]]]] = {}
+
+    for b in bookmakers:
+        book = b.get("title", "UnknownBook")
+        fr = is_fr_book(book)
+
+        for m in b.get("markets", []):
+            if m.get("key") != market_key:
+                continue
+
+            for o in m.get("outcomes", []):
+                side = o.get("name")  # Over/Under
+                player = o.get("description") or o.get("participant") or o.get("player")  # fallback
+                price = safe_float(o.get("price"))
+                point = safe_float(o.get("point"))
+
+                if not side or not player or price is None or point is None:
+                    continue
+
+                side = str(side)
+                player = str(player).strip()
+                line_key = f"{point}"
+
+                props.setdefault(player, {}).setdefault(line_key, {}).setdefault(side, []).append(
+                    {"price": price, "book": book, "is_fr": fr, "point": point}
+                )
+
+    return {"market": market_key, "props": props}
+
+
 def pick_consensus_line(lines_dict: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> Optional[str]:
-    """
-    Choose the most supported line_key by number of entries across outcomes.
-    """
     if not lines_dict:
         return None
-
     best_key = None
     best_count = -1
     for lk, outcomes in lines_dict.items():
@@ -151,18 +167,27 @@ def pick_consensus_line(lines_dict: Dict[str, Dict[str, List[Dict[str, Any]]]]) 
     return best_key
 
 
-def score_bet(edge_real: float, dev: float, books_used: int, market_type: str) -> float:
+def pick_consensus_prop_line(prop_lines: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> Optional[str]:
     """
-    Stable scoring (0-100):
-    - edge drives
-    - dev helps
-    - more books better
-    - props slightly boosted
+    prop_lines[line_key][side] -> entries
+    pick line_key with most total entries across Over+Under.
     """
-    edge_pts = max(0.0, min(1.0, edge_real / 0.08)) * 60.0        # 8% edge => 60 pts
-    dev_pts = max(0.0, min(1.0, dev / 0.15)) * 20.0              # 15% dev => 20 pts
-    book_pts = max(0.0, min(1.0, (books_used - 2) / 8.0)) * 15.0 # 10 books => 15 pts
+    if not prop_lines:
+        return None
+    best_key = None
+    best_count = -1
+    for lk, sides in prop_lines.items():
+        cnt = sum(len(v) for v in sides.values())
+        if cnt > best_count:
+            best_count = cnt
+            best_key = lk
+    return best_key
 
+
+def score_bet(edge_real: float, dev: float, books_used: int, market_type: str) -> float:
+    edge_pts = max(0.0, min(1.0, edge_real / 0.08)) * 60.0
+    dev_pts = max(0.0, min(1.0, dev / 0.15)) * 20.0
+    book_pts = max(0.0, min(1.0, (books_used - 2) / 8.0)) * 15.0
     bonus = 5.0 if market_type.startswith("PROP") else 0.0
     return max(0.0, min(100.0, edge_pts + dev_pts + book_pts + bonus))
 
@@ -180,14 +205,9 @@ def analyze_market_two_way(
     min_books: int,
     prefer_fr: bool = True,
 ) -> List[Dict[str, Any]]:
-    """
-    Analyze a 2-way market using no-vig fair prob from MEDIAN odds of both sides.
-    Produce candidates for side A and side B.
-    """
     if not entries_a or not entries_b:
         return []
 
-    # distinct books counts matter
     total_books = len({e["book"] for e in (entries_a + entries_b)})
     if total_books < min_books:
         return []
@@ -213,15 +233,12 @@ def analyze_market_two_way(
     chosen_a = best_fr_a if (prefer_fr and best_fr_a) else best_all_a
     chosen_b = best_fr_b if (prefer_fr and best_fr_b) else best_all_b
 
-    # edge_real = fair - implied(best)
     edge_a = fair_a - implied_prob(chosen_a["price"])
     edge_b = fair_b - implied_prob(chosen_b["price"])
 
-    # dev vs median = (best - median)/median
     dev_a = (chosen_a["price"] - med_a) / med_a if med_a > 0 else 0.0
     dev_b = (chosen_b["price"] - med_b) / med_b if med_b > 0 else 0.0
 
-    # books used = total distinct
     books_used = total_books
 
     candidates: List[Dict[str, Any]] = []
@@ -267,11 +284,8 @@ def analyze_market_two_way(
     return candidates
 
 
-# ✅ COMPAT: alias attendu par certains main.py
+# aliases (compat)
 def analyze_two_way_market(*args, **kwargs):
-    """
-    Alias stable pour compat import: analyze_two_way_market
-    """
     return analyze_market_two_way(*args, **kwargs)
 
 
@@ -318,9 +332,8 @@ def diversify_prop_picks(
             continue
 
         player = p.get("player")
-        if one_pick_per_player and player:
-            if player in used_players:
-                continue
+        if one_pick_per_player and player and player in used_players:
+            continue
 
         out.append(p)
         used_matches.add(p.get("match"))
@@ -331,13 +344,6 @@ def diversify_prop_picks(
 
 
 def allocate_stakes_fixed_splits(total_budget: float, n: int) -> List[float]:
-    """
-    Stable stake splits:
-      1 -> 100%
-      2 -> 60/40
-      3 -> 40/35/25
-    Rounded cents, sum <= budget.
-    """
     if n <= 0 or total_budget <= 0:
         return []
 

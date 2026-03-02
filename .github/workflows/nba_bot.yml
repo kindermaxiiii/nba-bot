@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Checkout (full history for safe rebase)
+      - name: Checkout (full history)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -35,13 +35,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ✅ Build team features (balldontlie key)
       - name: Build team features
         env:
           BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
         run: python build_team_features.py
 
-      # ✅ Run bot
       - name: Run bot
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
@@ -50,8 +48,7 @@ jobs:
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
         run: python main.py
 
-      # ✅ ULTRA STABLE COMMIT+PUSH (no merge conflicts)
-      - name: Commit + Push (ultra-stable)
+      - name: Commit + Push (conflict-proof)
         shell: bash
         run: |
           set -euo pipefail
@@ -59,15 +56,14 @@ jobs:
           git config user.name "nba-bot"
           git config user.email "nba-bot@users.noreply.github.com"
 
-          # Always sync first to avoid conflicts
-          git fetch origin main
+          # Ensure we're on main and up to date FIRST
           git checkout main
-          git reset --hard origin/main
+          git fetch origin main
+          git pull --rebase origin main || true
 
-          # Re-add the updated files from this run
-          git add -A state.json data/team_features.json || true
+          # Stage only the files we want to persist
+          git add state.json data/team_features.json || true
 
-          # If nothing changed, stop here
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
@@ -75,17 +71,23 @@ jobs:
 
           git commit -m "Update state & team features"
 
-          # Push with retries (handles transient failures)
+          # Push with auto-resolve for JSON conflicts by preferring local (ours)
           for i in 1 2 3 4 5; do
             echo "Push attempt $i..."
-            if git push origin HEAD:main; then
+            if git push origin main; then
               echo "Push OK"
               exit 0
             fi
-            echo "Push failed, retrying after sync..."
-            sleep $((i*2))
+
+            echo "Push failed, trying rebase + auto-resolve..."
             git fetch origin main
-            git rebase origin/main || (git rebase --abort && git reset --hard origin/main)
+
+            # Rebase; if conflict, keep OUR versions for these generated files
+            if ! git rebase origin/main; then
+              git checkout --ours state.json data/team_features.json || true
+              git add state.json data/team_features.json || true
+              git rebase --continue || (git rebase --abort && git reset --hard origin/main && exit 1)
+            fi
           done
 
           echo "Push failed after retries."

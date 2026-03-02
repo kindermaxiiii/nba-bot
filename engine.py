@@ -1,6 +1,8 @@
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
+
+# Heuristic FR book detection from book title
 FR_BOOK_KEYWORDS = [
     "betclic", "winamax", "parions", "pmu", "unibet fr", "unibet (fr)", "zebet",
     "bwin fr", "pokerstars", "vbet fr", "france", "fr"
@@ -37,6 +39,11 @@ def median(values: List[Optional[float]]) -> Optional[float]:
 
 
 def compute_no_vig_fair_probs(med_a: float, med_b: float) -> Tuple[float, float]:
+    """
+    Two-way market:
+      p_raw = 1/odds
+      fair = p_raw / (p_raw_a + p_raw_b)
+    """
     pa = implied_prob(med_a)
     pb = implied_prob(med_b)
     s = pa + pb
@@ -57,16 +64,75 @@ def best_fr_price(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 
 
 def score_bet(edge_real: float, dev: float, books_used: int, market_type: str) -> float:
-    edge_pts = max(0.0, min(1.0, edge_real / 0.08)) * 60.0
-    dev_pts = max(0.0, min(1.0, dev / 0.15)) * 20.0
-    book_pts = max(0.0, min(1.0, (books_used - 2) / 8.0)) * 15.0
+    """
+    Stable 0-100 scoring.
+    - edge drives
+    - dev helps
+    - more books helps
+    - props small bonus
+    """
+    edge_pts = max(0.0, min(1.0, edge_real / 0.08)) * 60.0        # 8% edge => 60 pts
+    dev_pts = max(0.0, min(1.0, dev / 0.15)) * 20.0              # 15% dev => 20 pts
+    book_pts = max(0.0, min(1.0, (books_used - 2) / 8.0)) * 15.0 # 10 books => 15 pts
     bonus = 5.0 if str(market_type).startswith("PROP") else 0.0
     return max(0.0, min(100.0, edge_pts + dev_pts + book_pts + bonus))
 
 
+def kelly_fraction(p: float, odds: float) -> float:
+    """
+    Kelly for decimal odds:
+      b = odds-1
+      f = (p*b - (1-p)) / b
+    clipped to [0, 1]
+    """
+    if odds is None:
+        return 0.0
+    o = float(odds)
+    if o <= 1.0:
+        return 0.0
+    b = o - 1.0
+    num = (p * b) - (1.0 - p)
+    f = num / b
+    return max(0.0, min(1.0, f))
+
+
+def classify_fragility(market: str, edge: float, dev: float, books_used: int) -> Tuple[str, str]:
+    """
+    Simple, transparent fragility/robustness tags.
+    (Ce n'est pas "institutionnel complet", mais c'est stable et utile.)
+    """
+    # fragility drivers
+    frag = 0
+    if books_used <= 2:
+        frag += 2
+    if dev >= 0.10:
+        frag += 1
+    if dev >= 0.20:
+        frag += 1
+    if market.startswith("PROP"):
+        frag += 1  # minutes variance
+    if market in ("TOTAL",):
+        frag += 1  # pace/variance
+    if edge >= 0.06:
+        frag += 1  # possible misprice/outlier (needs haircut)
+
+    if frag >= 5:
+        frag_tag = "HIGH"
+        rob_tag = "LOW"
+    elif frag >= 3:
+        frag_tag = "MED"
+        rob_tag = "MED"
+    else:
+        frag_tag = "LOW"
+        rob_tag = "HIGH"
+    return rob_tag, frag_tag
+
+
 def collect_market_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> Dict[str, Any]:
     """
-    Returns {"market": market_key, "lines": {line_key: {outcome_key: [entry,...]}}}
+    Returns:
+      {"market": market_key, "lines": {line_key: {outcome_key: [entry,...]}}}
+
     entry = {"price": float, "book": str, "is_fr": bool, "point": float|None}
     """
     lines: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
@@ -113,13 +179,14 @@ def collect_market_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> D
 
 def collect_player_prop_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> Dict[str, Any]:
     """
-    The Odds API props outcomes:
-      name: "Over"/"Under"
-      description: player name (most of the time)
+    The Odds API player prop outcomes typically:
+      name: "Over" / "Under"
+      description: player name
       point: line
       price: odds
-    Returns:
-      {"market": market_key, "props": {player: {line_key: {"Over":[...], "Under":[...]}}}}
+
+    Output:
+      {"market": market_key, "props": {player: {line_key: {"Over":[...],"Under":[...]}}}}
     """
     props: Dict[str, Dict[str, Dict[str, List[Dict[str, Any]]]]] = {}
 
@@ -132,7 +199,7 @@ def collect_player_prop_lines(bookmakers: List[Dict[str, Any]], market_key: str)
                 continue
 
             for o in m.get("outcomes", []):
-                side = o.get("name")
+                side = o.get("name")  # Over/Under
                 player = o.get("description") or o.get("participant") or o.get("player")
                 price = safe_float(o.get("price"))
                 point = safe_float(o.get("point"))
@@ -183,14 +250,17 @@ def analyze_two_way_market(
 ) -> Any:
     """
     Two-way market analysis using no-vig fair probs from MEDIAN odds (both sides).
-    If return_all=False -> returns passed list
-    If return_all=True  -> returns {"passed":[...], "all":[...], "rejects":{...}}
+
+    FIX 2:
+      - return_all=True returns ALL outcomes with pass flag + reject counters
+      - caller can build Near-Miss from positives even if not passing thresholds
     """
     rejects: Dict[str, int] = {}
 
     def rej(key: str, n: int = 1):
         rejects[key] = rejects.get(key, 0) + n
 
+    # distinct book counts
     books_a = len({e.get("book") for e in entries_a if e.get("book")})
     books_b = len({e.get("book") for e in entries_b if e.get("book")})
     total_books = len({e.get("book") for e in (entries_a + entries_b) if e.get("book")})
@@ -229,6 +299,7 @@ def analyze_two_way_market(
     dev_a = (float(chosen_a["price"]) - med_a) / med_a if med_a > 0 else 0.0
     dev_b = (float(chosen_b["price"]) - med_b) / med_b if med_b > 0 else 0.0
 
+    # EV per 1u stake: p_fair*odds - 1
     ev_a = fair_a * float(chosen_a["price"]) - 1.0
     ev_b = fair_b * float(chosen_b["price"]) - 1.0
 
@@ -239,28 +310,40 @@ def analyze_two_way_market(
         (outcome_a, chosen_a, best_fr_a, fair_a, edge_a, dev_a, med_a, ev_a),
         (outcome_b, chosen_b, best_fr_b, fair_b, edge_b, dev_b, med_b, ev_b),
     ]:
+        odds = float(chosen["price"])
+        k = kelly_fraction(fair, odds)
+        rob, frag = classify_fragility(str(market_label), float(edge), float(dev), int(books_used))
+
         item = {
             "match": match,
             "market": market_label,
             "line": line,
             "selection": outcome,
-            "odds": float(chosen["price"]),
+            "odds": odds,
             "book": str(chosen.get("book", "Unknown")),
             "best_is_fr": bool(chosen.get("is_fr")),
             "fr_best": float(best_fr["price"]) if best_fr else None,
             "fr_best_book": str(best_fr.get("book")) if best_fr else None,
+
             "median_odds": float(med),
             "books_used": int(books_used),
             "total_books": int(total_books),
-            "fair_prob": float(fair),
+
+            "p_fair": float(fair),
+            "p_imp_best": float(implied_prob(odds)),
             "edge": float(edge),
             "dev": float(dev),
             "ev": float(ev),
+
+            "kelly_full": float(k),          # Kelly brut
+            "robustness": rob,               # HIGH/MED/LOW
+            "fragility": frag,               # LOW/MED/HIGH
         }
         item["score"] = score_bet(item["edge"], item["dev"], item["books_used"], market_label)
         item["passed"] = bool(item["edge"] >= edge_threshold and item["dev"] >= dev_threshold)
         all_items.append(item)
 
+    # reject accounting
     for it in all_items:
         if it["edge"] < edge_threshold:
             rej("edge<th")
@@ -269,6 +352,11 @@ def analyze_two_way_market(
 
     passed = [it for it in all_items if it["passed"]]
     return {"passed": passed, "all": all_items, "rejects": rejects} if return_all else passed
+
+
+# Backward compat alias
+def analyze_market_two_way(*args, **kwargs):
+    return analyze_two_way_market(*args, **kwargs)
 
 
 def diversify_team_picks(
@@ -293,7 +381,6 @@ def diversify_team_picks(
         used_matches.add(p.get("match"))
         if p.get("market") == "MONEYLINE":
             ml_count += 1
-
     return out
 
 
@@ -327,6 +414,13 @@ def diversify_prop_picks(
 
 
 def allocate_stakes_fixed_splits(total_budget: float, n: int) -> List[float]:
+    """
+    Stable stake splits:
+      1 -> 100%
+      2 -> 60/40
+      3 -> 40/35/25
+    Rounded cents, sum <= budget.
+    """
     if n <= 0 or total_budget <= 0:
         return []
     if n == 1:

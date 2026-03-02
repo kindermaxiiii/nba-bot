@@ -1,78 +1,77 @@
 import os
 import time
+from typing import Any, Dict, List, Tuple, Optional
 import requests
-from typing import Any, Dict, List, Optional, Tuple
 
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "")
+ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
-ODDS_API_BASE = "https://api.the-odds-api.com/v4"
-SPORT_KEY = "basketball_nba"
-ODDS_ENDPOINT = f"{ODDS_API_BASE}/sports/{SPORT_KEY}/odds"
+BASE_URL = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
+DEFAULT_ODDS_FORMAT = "decimal"
+DEFAULT_DATE_FORMAT = "iso"
 
-ODDS_FORMAT = "decimal"
-DATE_FORMAT = "iso"
+
+class OddsApiError(RuntimeError):
+    pass
+
+
+def _request_json(url: str, params: Dict[str, Any], timeout: int, retries: int = 2) -> Tuple[int, Any, str]:
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.get(url, params=params, timeout=timeout)
+            txt = r.text or ""
+            if r.headers.get("content-type", "").startswith("application/json"):
+                try:
+                    return r.status_code, r.json(), txt
+                except Exception:
+                    return r.status_code, None, txt
+            return r.status_code, None, txt
+        except Exception as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(0.7 * attempt)
+    raise OddsApiError(f"Request failed after {retries} retries: {last_exc}")
 
 
 def fetch_odds_with_fallback(
     markets: str,
-    regions_priority: Optional[List[str]] = None,
-    timeout_s: int = 25,
+    regions_priority: List[str],
+    odds_format: str = DEFAULT_ODDS_FORMAT,
+    date_format: str = DEFAULT_DATE_FORMAT,
+    timeout: int = 25,
     retries: int = 2,
-    sleep_base_s: float = 1.25,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if not ODDS_API_KEY:
-        raise RuntimeError("ODDS_API_KEY missing (GitHub Secret).")
+        raise OddsApiError("ODDS_API_KEY missing (GitHub Secret).")
 
-    if regions_priority is None:
-        regions_priority = ["fr", "eu", "uk", "us", "us2", "au"]
-
-    attempted: List[str] = []
-    errors: List[Dict[str, Any]] = []
+    tried: List[str] = []
+    errors: List[str] = []
 
     for region in regions_priority:
-        attempted.append(region)
-
+        tried.append(region)
         params = {
             "apiKey": ODDS_API_KEY,
             "regions": region,
             "markets": markets,
-            "oddsFormat": ODDS_FORMAT,
-            "dateFormat": DATE_FORMAT,
+            "oddsFormat": odds_format,
+            "dateFormat": date_format,
         }
 
-        for attempt in range(1, retries + 2):
-            try:
-                r = requests.get(ODDS_ENDPOINT, params=params, timeout=timeout_s)
+        status, js, raw = _request_json(BASE_URL, params=params, timeout=timeout, retries=retries)
 
-                if r.status_code == 422:
-                    errors.append({"region": region, "status": 422, "body": (r.text or "")[:300], "markets": markets})
-                    break
+        if status == 422:
+            errors.append(f"422 region={region}: {raw[:200]}")
+            continue
+        if status >= 400:
+            errors.append(f"{status} region={region}: {raw[:200]}")
+            continue
 
-                r.raise_for_status()
-                data = r.json()
-                return data, {
-                    "chosen_region": region,
-                    "attempted_regions": attempted,
-                    "errors": errors,
-                    "markets": markets,
-                    "notes": "success",
-                }
+        games = js if isinstance(js, list) else []
+        return games, {
+            "chosen_region": region,
+            "regions_tried": tried,
+            "errors": errors,
+            "markets": markets,
+        }
 
-            except Exception as e:
-                if attempt <= retries:
-                    time.sleep(sleep_base_s * attempt)
-                else:
-                    errors.append({
-                        "region": region,
-                        "status": getattr(getattr(e, "response", None), "status_code", None),
-                        "body": str(e)[:300],
-                        "markets": markets,
-                    })
-
-    return [], {
-        "chosen_region": None,
-        "attempted_regions": attempted,
-        "errors": errors,
-        "markets": markets,
-        "notes": "all regions failed",
-    }
+    raise OddsApiError(f"All regions failed. tried={tried} errors={errors[-3:]}")

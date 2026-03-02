@@ -45,9 +45,7 @@ def fetch_odds_with_fallback(
                 r = requests.get(ODDS_ENDPOINT, params=params, timeout=timeout_s)
 
                 if r.status_code == 422:
-                    errors.append(
-                        {"region": region, "status": 422, "body": (r.text or "")[:300], "markets": markets}
-                    )
+                    errors.append({"region": region, "status": 422, "body": (r.text or "")[:300], "markets": markets})
                     break
 
                 r.raise_for_status()
@@ -64,14 +62,12 @@ def fetch_odds_with_fallback(
                 if attempt <= retries:
                     time.sleep(sleep_base_s * attempt)
                 else:
-                    errors.append(
-                        {
-                            "region": region,
-                            "status": getattr(getattr(e, "response", None), "status_code", None),
-                            "body": str(e)[:300],
-                            "markets": markets,
-                        }
-                    )
+                    errors.append({
+                        "region": region,
+                        "status": getattr(getattr(e, "response", None), "status_code", None),
+                        "body": str(e)[:300],
+                        "markets": markets,
+                    })
 
     return [], {
         "chosen_region": None,

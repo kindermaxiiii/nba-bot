@@ -4,8 +4,8 @@ from typing import Any, Dict, List, Tuple, Optional
 import requests
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
-
 BASE_URL = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
+
 DEFAULT_ODDS_FORMAT = "decimal"
 DEFAULT_DATE_FORMAT = "iso"
 
@@ -60,10 +60,10 @@ def fetch_odds_with_fallback(
         status, js, raw = _request_json(BASE_URL, params=params, timeout=timeout, retries=retries)
 
         if status == 422:
-            errors.append(f"422 region={region}: {raw[:200]}")
+            errors.append(f"422 region={region} markets={markets}: {raw[:200]}")
             continue
         if status >= 400:
-            errors.append(f"{status} region={region}: {raw[:200]}")
+            errors.append(f"{status} region={region} markets={markets}: {raw[:200]}")
             continue
 
         games = js if isinstance(js, list) else []

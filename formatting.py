@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def pct(x: float) -> str:
@@ -28,7 +28,6 @@ def format_team_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_bud
         fr_best_line = f"\nFR best: **{p['fr_best']:.2f}** ({p['fr_best_book']})"
 
     line_line = f"\nLine: **{p['line']}**" if p.get("line") is not None else ""
-
     bk_pct = (stake / bankroll) * 100.0 if bankroll > 0 else 0.0
 
     return (
@@ -37,7 +36,7 @@ def format_team_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_bud
         f"**Sélection:** {p['selection']}\n"
         f"**Best:** **{p['odds']:.2f}** ({p['book']}) — {best_flag}"
         f"{fr_best_line}\n"
-        f"**Books utilisés (2-way):** {p.get('books_used', '?')} | **Cote médiane (sélection):** {p.get('median_odds', 0):.2f}\n"
+        f"**Books utilisés (2-way):** {p.get('books_used', '?')} | **Cote médiane (sélection):** {p.get('median_odds', 0.0):.2f}\n"
         f"**Fair p (no-vig):** {pct(p.get('fair_prob', 0.0))} | **Implied(best):** {pct(1.0 / p['odds'])}\n"
         f"**Edge réel:** **{pct(p.get('edge', 0.0))}** | **Dev vs médiane:** {pct(p.get('dev', 0.0))}\n"
         f"**Bet Quality:** **{p.get('score', 0):.0f}/100 ({tier(p.get('score', 0))})**\n"
@@ -54,14 +53,15 @@ def format_prop_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_bud
         fr_best_line = f"\nFR best: **{p['fr_best']:.2f}** ({p['fr_best_book']})"
 
     bk_pct = (stake / bankroll) * 100.0 if bankroll > 0 else 0.0
+    line_line = f" {p['line']}" if p.get("line") is not None else ""
 
     return (
         f"**Match:** {p['match']}\n"
         f"**Marché:** {p['market']}\n"
-        f"**Sélection:** {p['player']} — {p['selection']}\n"
+        f"**Sélection:** {p['player']} — {p['selection']}{line_line}\n"
         f"**Best:** **{p['odds']:.2f}** ({p['book']}) — {best_flag}"
         f"{fr_best_line}\n"
-        f"**Books utilisés (2-way):** {p.get('books_used', '?')} | **Cote médiane (sélection):** {p.get('median_odds', 0):.2f}\n"
+        f"**Books utilisés (2-way):** {p.get('books_used', '?')} | **Cote médiane (sélection):** {p.get('median_odds', 0.0):.2f}\n"
         f"**Fair p (no-vig):** {pct(p.get('fair_prob', 0.0))} | **Implied(best):** {pct(1.0 / p['odds'])}\n"
         f"**Edge réel:** **{pct(p.get('edge', 0.0))}** | **Dev vs médiane:** {pct(p.get('dev', 0.0))}\n"
         f"**Bet Quality:** **{p.get('score', 0):.0f}/100 ({tier(p.get('score', 0))})**\n"

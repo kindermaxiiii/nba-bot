@@ -83,16 +83,50 @@ def median(values):
 
 def fetch_games():
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
-    params = {
-        "apiKey": ODDS_API_KEY,
-        "regions": REGIONS,
-        "markets": MARKETS,
-        "oddsFormat": ODDS_FORMAT,
-        "dateFormat": DATE_FORMAT,
-    }
-    r = requests.get(url, params=params, timeout=25)
-    r.raise_for_status()
-    return r.json()
+
+    # On essaie plusieurs régions, dans un ordre "utile" pour toi.
+    # Tu peux changer l'ordre ensuite, mais là on veut juste que ça RUN.
+    region_candidates = [
+        "fr",      # si ça marche chez toi (tu l'avais avant)
+        "eu",
+        "uk",
+        "us",
+        "us2",
+        "au",
+    ]
+
+    last_err = None
+
+    for reg in region_candidates:
+        params = {
+            "apiKey": ODDS_API_KEY,
+            "regions": reg,
+            "markets": MARKETS,
+            "oddsFormat": ODDS_FORMAT,
+            "dateFormat": DATE_FORMAT,
+        }
+
+        try:
+            r = requests.get(url, params=params, timeout=25)
+
+            # Si l'API renvoie 422 sur une region: on tente la suivante
+            if r.status_code == 422:
+                print(f"[odds-api] region={reg} -> 422 (not allowed / invalid). Trying next...")
+                last_err = RuntimeError(f"422 for regions={reg}: {r.text[:300]}")
+                continue
+
+            r.raise_for_status()
+
+            data = r.json()
+            print(f"[odds-api] SUCCESS with regions={reg} | games={len(data)}")
+            return data
+
+        except Exception as e:
+            print(f"[odds-api] region={reg} failed: {e}")
+            last_err = e
+            continue
+
+    raise RuntimeError(f"All regions failed. Last error: {last_err}")
 
 
 def fetch_events_today():

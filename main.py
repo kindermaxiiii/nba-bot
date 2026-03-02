@@ -418,15 +418,15 @@ def main():
             continue
 
         msg = (
-            f"**Match:** {pick['match']}\n"
-            f"**Marché:** {pick['market']}\n"
-            f"**Sélection:** {pick['selection']}\n"
-            f"**Meilleure cote FR:** {pick['odds']:.2f} (**{pick['book']}**)\n"
-            pct_bk = (stake / BANKROLL) * 100 if BANKROLL > 0 else 0
-            f"**Mise:** {pct_bk:.2f}% BK (≈ {stake:.2f}€)\n"
-            f"**Edge proxy:** {pick['edge']*100:.2f}% | **Dev vs médiane:** {pick['dev']*100:.2f}%\n"
-            f"**Budget jour:** {DAILY_BUDGET:.2f}€ | **Utilisé après bet:** {(STATE['daily_spent_eur'] + stake):.2f}€\n"
-            f"_Max 3 TEAM bets/jour. Si la cote bouge fortement avant ton clic, ne force pas._"
+    f"**Match:** {pick['match']}\n"
+    f"**Marché:** {pick['market']}\n"
+    f"**Sélection:** {pick['selection']}\n"
+    f"**Meilleure cote FR:** {pick['odds']:.2f} (**{pick['book']}**)\n"
+    f"**Mise (budget jour 10% BK):** {pct_bk:.2f}% BK ({stake:.2f}€)\n"
+    f"**Edge proxy:** {pick['edge']*100:.2f}% | **Dev vs médiane:** {pick['dev']*100:.2f}%\n"
+    f"**Budget jour:** {DAILY_BUDGET:.2f}€ | **Utilisé après bet:** {(STATE['daily_spent_eur'] + stake):.2f}€\n"
+    f"_Max 3 TEAM bets/jour. Si la cote bouge fortement avant ton clic, ne force pas._"
+)
         )
         post_discord(TEAM_WEBHOOK, "✅ NBA TEAM BET", msg)
 

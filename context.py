@@ -2,15 +2,13 @@
 import os
 import json
 import urllib.request
+from typing import Optional, Dict, Any
 
 
-def post_discord(payload: dict) -> None:
-    url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-
+def _post(url: str, payload: Dict[str, Any]) -> None:
+    url = (url or "").strip()
     if not url:
-        # On log explicitement dans les logs GitHub Actions
-        print("❌ DISCORD_WEBHOOK_URL manquant (Secret non défini ou non passé au workflow).")
-        print("Payload à envoyer:", json.dumps(payload, ensure_ascii=False)[:1000])
+        print("❌ Webhook URL manquant. Payload:", json.dumps(payload, ensure_ascii=False)[:1000])
         return
 
     data = json.dumps(payload).encode("utf-8")
@@ -30,4 +28,29 @@ def post_discord(payload: dict) -> None:
                 print("Discord response body:", body[:1000])
     except Exception as e:
         print("❌ Erreur en envoyant sur Discord:", repr(e))
+        print("Webhook:", url[:60] + "..." if len(url) > 60 else url)
         print("Payload:", json.dumps(payload, ensure_ascii=False)[:1000])
+
+
+def post_discord_team(content: str = "", embeds: Optional[list] = None) -> None:
+    url = os.getenv("DISCORD_TEAM_WEBHOOK", "")
+    payload = {"content": content}
+    if embeds:
+        payload["embeds"] = embeds
+    _post(url, payload)
+
+
+def post_discord_props(content: str = "", embeds: Optional[list] = None) -> None:
+    url = os.getenv("DISCORD_PROPS_WEBHOOK", "")
+    payload = {"content": content}
+    if embeds:
+        payload["embeds"] = embeds
+    _post(url, payload)
+
+
+def post_discord_log(content: str = "", embeds: Optional[list] = None) -> None:
+    url = os.getenv("DISCORD_LOG_WEBHOOK", "")
+    payload = {"content": content}
+    if embeds:
+        payload["embeds"] = embeds
+    _post(url, payload)

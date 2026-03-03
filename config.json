@@ -1,21 +1,24 @@
 {
-  "bankroll_eur": 250.0,
-  "daily_budget_pct": 0.10,
-
-  "max_team_bets_per_day": 3,
-  "max_prop_bets_per_day": 3,
-
-  "edge_threshold": 0.015,
-  "dev_threshold": 0.02,
   "min_bookmakers": 2,
-
-  "team_budget_share": 0.60,
-  "props_budget_share": 0.40,
-
-  "prefer_fr_books": true,
-
-  "max_ml_per_slate": 2,
-  "one_pick_per_match": true,
-
-  "max_single_stake_share_day": 0.25
+  "prefer_fr_books": false,
+  "max_ml_total": 2,
+  "target_team": 3,
+  "target_props": 3,
+  "regions_team": [
+    "us",
+    "us2",
+    "uk",
+    "eu",
+    "au",
+    "fr"
+  ],
+  "regions_props": [
+    "us",
+    "us2",
+    "uk",
+    "eu",
+    "au",
+    "fr"
+  ],
+  "team_features_path": "data/team_features.json"
 }

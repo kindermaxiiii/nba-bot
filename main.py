@@ -228,7 +228,7 @@ def fetch_team_games_all_markets() -> Tuple[List[Dict[str, Any]], Dict[str, Any]
     """
     games, meta = fetch_odds_with_fallback(
         markets=TEAM_MARKETS_BASE,
-        regions_priority=["fr", "eu", "uk", "us", "us2", "au"],
+        regions_priority=["fr", "us", "us2", "uk", "eu", "au"],
     )
 
     games_by_id: Dict[str, Dict[str, Any]] = {g.get("id"): g for g in games if g.get("id")}

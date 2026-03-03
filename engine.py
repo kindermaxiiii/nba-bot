@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 FR_BOOK_KEYWORDS = [
     "betclic", "winamax", "parions", "pmu", "unibet (fr)", "unibet fr",
-    "zebet", "bwin fr", "pokerstars", "vbet fr", "france"
+    "zebet", "bwin fr", "pokerstars", "vbet fr"
 ]
 
 
@@ -48,7 +48,7 @@ def compute_no_vig_fair_probs(med_a: float, med_b: float) -> Tuple[float, float]
 def best_price(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not entries:
         return None
-    return max(entries, key=lambda x: float(x.get("price") or 0.0))
+    return max(entries, key=lambda x: x.get("price", 0.0))
 
 
 def best_fr_price(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -56,27 +56,19 @@ def best_fr_price(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return best_price(frs) if frs else None
 
 
-def score_bet(edge_real: float, dev: float, books_used: int, market_type: str) -> float:
-    edge_pts = max(0.0, min(1.0, edge_real / 0.08)) * 60.0
-    dev_pts = max(0.0, min(1.0, dev / 0.15)) * 20.0
-    book_pts = max(0.0, min(1.0, (books_used - 2) / 8.0)) * 15.0
+def score_bet(ev: float, dev: float, books_used: int, market_type: str) -> float:
+    """
+    Score orienté "top picks" :
+      - EV (0..+20%) = poids principal
+      - Dev (vs median) = liquidité / price quality
+      - Books = profondeur
+      - petit bonus props
+    """
+    ev_pts = max(0.0, min(1.0, ev / 0.20)) * 70.0
+    dev_pts = max(0.0, min(1.0, dev / 0.10)) * 15.0
+    book_pts = max(0.0, min(1.0, (books_used - 2) / 8.0)) * 10.0
     bonus = 5.0 if str(market_type).startswith("PROP") else 0.0
-    return max(0.0, min(100.0, edge_pts + dev_pts + book_pts + bonus))
-
-
-def pick_consensus_line(lines_dict: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> Optional[str]:
-    if not lines_dict:
-        return None
-    best_key, best_count = None, -1
-    for lk, outcomes in lines_dict.items():
-        cnt = sum(len(v) for v in outcomes.values())
-        if cnt > best_count:
-            best_key, best_count = lk, cnt
-    return best_key
-
-
-def pick_consensus_prop_line(player_lines: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> Optional[str]:
-    return pick_consensus_line(player_lines)
+    return max(0.0, min(100.0, ev_pts + dev_pts + book_pts + bonus))
 
 
 def collect_market_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> Dict[str, Any]:
@@ -116,8 +108,15 @@ def collect_market_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> D
                         continue
                     line_key = f"{abs(point)}"
                     outcome_key = str(name)  # team
+                elif market_key == "team_totals":
+                    if point is None:
+                        continue
+                    team = o.get("description") or o.get("team") or o.get("participant")
+                    if not team:
+                        continue
+                    line_key = f"{team}|{point}"
+                    outcome_key = str(name)  # Over/Under
                 else:
-                    # generic
                     line_key = f"{point}" if point is not None else "NA"
                     outcome_key = str(name)
 
@@ -126,42 +125,6 @@ def collect_market_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> D
                 )
 
     return {"market": market_key, "lines": lines}
-
-
-def collect_team_totals_lines(bookmakers: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    OddsAPI team_totals:
-      name: Over/Under
-      description: team name
-      point: line
-    Output:
-      {"market":"team_totals","lines": { "TEAM|POINT": {"Over":[...], "Under":[...] } } }
-    """
-    lines: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
-
-    for b in bookmakers or []:
-        book = b.get("title", "UnknownBook")
-        fr = is_fr_book(book)
-
-        for m in b.get("markets", []) or []:
-            if m.get("key") != "team_totals":
-                continue
-
-            for o in m.get("outcomes", []) or []:
-                side = o.get("name")  # Over/Under
-                price = safe_float(o.get("price"))
-                point = safe_float(o.get("point"))
-                team = o.get("description") or o.get("team") or o.get("participant")
-
-                if not side or price is None or point is None or not team:
-                    continue
-
-                lk = f"{team}|{float(point)}"
-                lines.setdefault(lk, {}).setdefault(str(side), []).append(
-                    {"price": float(price), "book": book, "is_fr": fr, "point": float(point)}
-                )
-
-    return {"market": "team_totals", "lines": lines}
 
 
 def collect_player_prop_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> Dict[str, Any]:
@@ -197,12 +160,55 @@ def collect_player_prop_lines(bookmakers: List[Dict[str, Any]], market_key: str)
                 if not player:
                     continue
 
-                lk = f"{float(point)}"
-                props.setdefault(player, {}).setdefault(lk, {}).setdefault(str(side), []).append(
+                line_key = f"{point}"
+                props.setdefault(player, {}).setdefault(line_key, {}).setdefault(str(side), []).append(
                     {"price": float(price), "book": book, "is_fr": fr, "point": float(point)}
                 )
 
     return {"market": market_key, "props": props}
+
+
+def pick_consensus_line(lines_dict: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> Optional[str]:
+    if not lines_dict:
+        return None
+    best_key, best_count = None, -1
+    for lk, outcomes in lines_dict.items():
+        cnt = sum(len(v) for v in outcomes.values())
+        if cnt > best_count:
+            best_key, best_count = lk, cnt
+    return best_key
+
+
+def pick_consensus_prop_line(player_lines: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> Optional[str]:
+    return pick_consensus_line(player_lines)
+
+
+def _apply_edge_haircut(
+    fair_prob: float,
+    best_odds: float,
+    haircut: float = 0.25,
+    edge_trigger: float = 0.08,
+) -> Tuple[float, float, float]:
+    """
+    If edge_raw > edge_trigger:
+      p_adj = p_imp + (p_fair - p_imp) * (1-haircut)
+    Returns: (p_adj, edge_raw, edge_adj)
+    """
+    p_imp = implied_prob(best_odds)
+    edge_raw = fair_prob - p_imp
+    if edge_raw <= edge_trigger:
+        return fair_prob, edge_raw, edge_raw
+
+    p_adj = p_imp + (fair_prob - p_imp) * (1.0 - haircut)
+    edge_adj = p_adj - p_imp
+    return p_adj, edge_raw, edge_adj
+
+
+def _blend_prob(p_model: Optional[float], p_mkt: float, blend: float) -> float:
+    if p_model is None:
+        return float(p_mkt)
+    b = max(0.0, min(1.0, float(blend)))
+    return (b * float(p_model)) + ((1.0 - b) * float(p_mkt))
 
 
 def analyze_two_way_market(
@@ -213,38 +219,51 @@ def analyze_two_way_market(
     outcome_b: str,
     entries_a: List[Dict[str, Any]],
     entries_b: List[Dict[str, Any]],
-    min_books: int = 2,
+    min_books: int,
     prefer_fr: bool = True,
-    # NEW: pass p_real per side (already blended). If None -> fallback to p_mkt (no-vig)
-    p_real_a: Optional[float] = None,
-    p_real_b: Optional[float] = None,
-) -> List[Dict[str, Any]]:
+    return_all: bool = False,
+    p_model_a: Optional[float] = None,
+    p_model_b: Optional[float] = None,
+    model_blend: float = 0.65,
+    haircut_edge_gt: float = 0.08,
+    haircut_rate: float = 0.25,
+) -> Any:
     """
-    Returns 2 dicts (one per side) with:
-      - fair_prob_raw = p_mkt (no-vig median)
-      - fair_prob = p_real (model blend)
-      - edge_raw = p_mkt - p_imp
-      - edge = p_real - p_imp
-      - ev = p_real*odds - 1
+    p_mkt = no-vig median odds (two-way)
+    p_real = blend(p_model, p_mkt)
+    EV = p_real * odds - 1
     """
+    rejects: Dict[str, int] = {}
+
+    def rej(k: str, n: int = 1):
+        rejects[k] = rejects.get(k, 0) + int(n)
+
+    total_books = len({e.get("book") for e in (entries_a + entries_b) if e.get("book")})
     books_a = len({e.get("book") for e in entries_a if e.get("book")})
     books_b = len({e.get("book") for e in entries_b if e.get("book")})
-    total_books = len({e.get("book") for e in (entries_a + entries_b) if e.get("book")})
 
-    if total_books < min_books or books_a < 1 or books_b < 1:
-        return []
+    if total_books < min_books:
+        rej("books<th")
+        return {"passed": [], "all": [], "rejects": rejects} if return_all else []
+
+    if books_a < 1 or books_b < 1:
+        rej("missing_side")
+        return {"passed": [], "all": [], "rejects": rejects} if return_all else []
 
     med_a = median([e.get("price") for e in entries_a])
     med_b = median([e.get("price") for e in entries_b])
     if med_a is None or med_b is None:
-        return []
+        rej("median_missing")
+        return {"passed": [], "all": [], "rejects": rejects} if return_all else []
 
+    # market no-vig fair
     p_mkt_a, p_mkt_b = compute_no_vig_fair_probs(med_a, med_b)
 
     best_all_a = best_price(entries_a)
     best_all_b = best_price(entries_b)
     if best_all_a is None or best_all_b is None:
-        return []
+        rej("best_missing")
+        return {"passed": [], "all": [], "rejects": rejects} if return_all else []
 
     best_fr_a = best_fr_price(entries_a)
     best_fr_b = best_fr_price(entries_b)
@@ -254,28 +273,39 @@ def analyze_two_way_market(
     dev_a = (float(chosen_a["price"]) - float(med_a)) / float(med_a) if med_a > 0 else 0.0
     dev_b = (float(chosen_b["price"]) - float(med_b)) / float(med_b) if med_b > 0 else 0.0
 
-    # fallback: p_real = p_mkt if not provided
-    p_real_a = float(p_real_a) if p_real_a is not None else float(p_mkt_a)
-    p_real_b = float(p_real_b) if p_real_b is not None else float(p_mkt_b)
+    # BLEND model + market
+    p_real_a_raw = _blend_prob(p_model_a, p_mkt_a, model_blend)
+    p_real_b_raw = _blend_prob(p_model_b, p_mkt_b, model_blend)
 
-    # implied based on best odds
-    p_imp_a = implied_prob(float(chosen_a["price"]))
-    p_imp_b = implied_prob(float(chosen_b["price"]))
+    # Normalize (keep two-way coherent if both sides have model probs)
+    s = p_real_a_raw + p_real_b_raw
+    if s > 0:
+        p_real_a_raw /= s
+        p_real_b_raw /= s
 
-    edge_raw_a = float(p_mkt_a) - p_imp_a
-    edge_raw_b = float(p_mkt_b) - p_imp_b
-    edge_a = float(p_real_a) - p_imp_a
-    edge_b = float(p_real_b) - p_imp_b
+    # haircut extreme edges
+    p_adj_a, edge_raw_a, edge_adj_a = _apply_edge_haircut(
+        fair_prob=float(p_real_a_raw),
+        best_odds=float(chosen_a["price"]),
+        haircut=haircut_rate,
+        edge_trigger=haircut_edge_gt,
+    )
+    p_adj_b, edge_raw_b, edge_adj_b = _apply_edge_haircut(
+        fair_prob=float(p_real_b_raw),
+        best_odds=float(chosen_b["price"]),
+        haircut=haircut_rate,
+        edge_trigger=haircut_edge_gt,
+    )
 
-    ev_a = float(p_real_a) * float(chosen_a["price"]) - 1.0
-    ev_b = float(p_real_b) * float(chosen_b["price"]) - 1.0
+    ev_a = p_adj_a * float(chosen_a["price"]) - 1.0
+    ev_b = p_adj_b * float(chosen_b["price"]) - 1.0
 
-    books_used = int(min(books_a, books_b))
+    books_used = min(books_a, books_b)
 
-    out: List[Dict[str, Any]] = []
-    for outcome, chosen, best_fr, p_mkt, p_real, edge_raw, edge, dev, med, ev in [
-        (outcome_a, chosen_a, best_fr_a, float(p_mkt_a), float(p_real_a), float(edge_raw_a), float(edge_a), float(dev_a), float(med_a), float(ev_a)),
-        (outcome_b, chosen_b, best_fr_b, float(p_mkt_b), float(p_real_b), float(edge_raw_b), float(edge_b), float(dev_b), float(med_b), float(ev_b)),
+    all_items: List[Dict[str, Any]] = []
+    for outcome, chosen, best_fr, p_mkt, p_raw, p_adj, edge_raw, edge_adj, dev, med, ev in [
+        (outcome_a, chosen_a, best_fr_a, float(p_mkt_a), float(p_real_a_raw), float(p_adj_a), float(edge_raw_a), float(edge_adj_a), float(dev_a), float(med_a), float(ev_a)),
+        (outcome_b, chosen_b, best_fr_b, float(p_mkt_b), float(p_real_b_raw), float(p_adj_b), float(edge_raw_b), float(edge_adj_b), float(dev_b), float(med_b), float(ev_b)),
     ]:
         item = {
             "match": match,
@@ -288,21 +318,23 @@ def analyze_two_way_market(
             "fr_best": float(best_fr["price"]) if best_fr else None,
             "fr_best_book": str(best_fr.get("book")) if best_fr else None,
             "median_odds": float(med),
-            "books_used": books_used,
-            "total_books": total_books,
-            "fair_prob_raw": p_mkt,   # marché no-vig
-            "fair_prob": p_real,      # p_real = blend
-            "edge_raw": edge_raw,
-            "edge": edge,
-            "dev": dev,
-            "ev": ev,
-            "haircut_applied": False,
+            "books_used": int(books_used),
+            "total_books": int(total_books),
+            "p_mkt": float(p_mkt),
+            "p_real_raw": float(p_raw),
+            "p_real": float(p_adj),
+            "edge_raw": float(edge_raw),
+            "edge": float(edge_adj),
+            "dev": float(dev),
+            "ev": float(ev),
+            "haircut_applied": bool(edge_raw > haircut_edge_gt),
         }
-        item["score"] = score_bet(item["edge"], item["dev"], item["books_used"], market_label)
-        item["score_adj"] = item["score"]  # compat formatting
-        out.append(item)
+        item["score"] = score_bet(item["ev"], item["dev"], item["books_used"], market_label)
+        all_items.append(item)
 
-    return out
+    # "passed" = EV>=0 (pour éviter NO BET artificiels tu prends TOP même si EV négatif plus tard)
+    passed = [it for it in all_items if it.get("ev", -999) >= 0.0]
+    return {"passed": passed, "all": all_items, "rejects": rejects} if return_all else passed
 
 
 def diversify_team_picks(
@@ -315,7 +347,7 @@ def diversify_team_picks(
     used_matches = set()
     ml_count = 0
 
-    for p in sorted(picks, key=lambda x: (x.get("ev", 0), x.get("edge", 0), x.get("dev", 0), x.get("score_adj", 0)), reverse=True):
+    for p in sorted(picks, key=lambda x: (x.get("score", 0), x.get("ev", 0), x.get("dev", 0)), reverse=True):
         if len(out) >= max_picks:
             break
         if one_pick_per_match and p.get("match") in used_matches:
@@ -333,14 +365,14 @@ def diversify_team_picks(
 def diversify_prop_picks(
     picks: List[Dict[str, Any]],
     max_picks: int,
-    one_pick_per_match: bool = False,
+    one_pick_per_match: bool = True,
     one_pick_per_player: bool = True,
 ) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     used_matches = set()
     used_players = set()
 
-    for p in sorted(picks, key=lambda x: (x.get("ev", 0), x.get("edge", 0), x.get("dev", 0), x.get("score_adj", 0)), reverse=True):
+    for p in sorted(picks, key=lambda x: (x.get("score", 0), x.get("ev", 0), x.get("dev", 0)), reverse=True):
         if len(out) >= max_picks:
             break
         if one_pick_per_match and p.get("match") in used_matches:
@@ -352,54 +384,19 @@ def diversify_prop_picks(
                 continue
 
         out.append(p)
-        if one_pick_per_match:
-            used_matches.add(p.get("match"))
+        used_matches.add(p.get("match"))
         if player:
             used_players.add(player)
-
     return out
 
 
-def allocate_stakes_capped(total_budget: float, n: int, max_single_share: float = 0.30) -> List[float]:
-    """
-    Gardé pour compat avec ton formatting.
-    Si tu ne veux plus afficher les mises : tu pourras juste ignorer stake côté formatting.
-    """
+def allocate_stakes_equal(total_budget: float, n: int) -> List[float]:
     if n <= 0 or total_budget <= 0:
         return []
-    cap = max(0.05, min(1.0, float(max_single_share)))
-
-    if n == 1:
-        return [round(total_budget * cap, 2)]
-
-    # splits simples (top1 > top2 > top3)
-    if n == 2:
-        splits = [0.60, 0.40]
-    else:
-        splits = [0.40, 0.35, 0.25]
-
-    stakes = [round(total_budget * s, 2) for s in splits[:n]]
-    cap_val = total_budget * cap
-
-    over = 0.0
-    for i in range(len(stakes)):
-        if stakes[i] > cap_val:
-            over += stakes[i] - cap_val
-            stakes[i] = round(cap_val, 2)
-
-    if over > 0:
-        for i in range(len(stakes)):
-            room = cap_val - stakes[i]
-            if room <= 0:
-                continue
-            add = min(room, over)
-            stakes[i] = round(stakes[i] + add, 2)
-            over -= add
-            if over <= 0:
-                break
-
-    while sum(stakes) - total_budget > 0.001:
-        i = max(range(len(stakes)), key=lambda k: stakes[k])
-        stakes[i] = round(max(0.0, stakes[i] - 0.01), 2)
-
+    stake = round(total_budget / n, 2)
+    stakes = [stake for _ in range(n)]
+    # fix rounding
+    diff = round(total_budget - sum(stakes), 2)
+    if stakes and abs(diff) >= 0.01:
+        stakes[0] = round(stakes[0] + diff, 2)
     return stakes

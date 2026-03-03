@@ -1,34 +1,11 @@
 {
   "date_utc": "2026-03-03",
-  "daily_spent_eur": 22.5,
-  "team_bets_sent": 2,
+  "daily_spent_eur": 0.0,
+  "team_bets_sent": 0,
   "prop_bets_sent": 0,
-  "team_spent_eur": 22.5,
+  "team_spent_eur": 0.0,
   "props_spent_eur": 0.0,
-  "last_regions_team": "us",
+  "last_regions_team": null,
   "last_regions_props": null,
-  "clv": {
-    "Boston Celtics @ Milwaukee Bucks|MONEYLINE||Boston Celtics|None": {
-      "created_ts": "2026-03-03T01:14:13.021136+00:00",
-      "snapshots": [
-        {
-          "tag": "T0",
-          "odds": 1.45,
-          "book": "MyBookie.ag",
-          "ts_utc": "2026-03-03T01:14:13.021136+00:00"
-        }
-      ]
-    },
-    "Detroit Pistons @ Cleveland Cavaliers|SPREAD||Cleveland Cavaliers|1.5": {
-      "created_ts": "2026-03-03T01:14:13.210309+00:00",
-      "snapshots": [
-        {
-          "tag": "T0",
-          "odds": 2.04,
-          "book": "LowVig.ag",
-          "ts_utc": "2026-03-03T01:14:13.210309+00:00"
-        }
-      ]
-    }
-  }
+  "clv": {}
 }

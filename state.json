@@ -1,11 +1,23 @@
 {
   "date_utc": "2026-03-03",
-  "daily_spent_eur": 0,
-  "team_bets_sent": 0,
+  "daily_spent_eur": 6.25,
+  "team_bets_sent": 1,
   "prop_bets_sent": 0,
-  "team_spent_eur": 0,
+  "team_spent_eur": 6.25,
   "props_spent_eur": 0.0,
   "last_regions_team": "us",
   "last_regions_props": null,
-  "clv": {}
+  "clv": {
+    "Memphis Grizzlies @ Minnesota Timberwolves|MONEYLINE||Memphis Grizzlies|None": {
+      "created_ts": "2026-03-03T18:15:48.833707+00:00",
+      "snapshots": [
+        {
+          "tag": "T0",
+          "odds": 7.1,
+          "book": "FanDuel",
+          "ts_utc": "2026-03-03T18:15:48.833707+00:00"
+        }
+      ]
+    }
+  }
 }

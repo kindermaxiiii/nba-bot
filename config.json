@@ -16,4 +16,6 @@
 
   "max_ml_per_slate": 2,
   "one_pick_per_match": true
+
+  "max_single_stake_share_day": 0.25
 }

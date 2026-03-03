@@ -60,8 +60,9 @@ def format_team_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_bud
     dev = float(p.get("dev", 0.0))
     ev = float(p.get("ev", fair_adj * odds - 1.0))
 
-    score_rank = float(p.get("score_rank", p.get("score", 0.0)))
-    score_base = float(p.get("score_base", 0.0))
+    # dans format_team_pick et format_prop_pick:
+    score_adj = float(p.get("score", 0.0))
+    score_base = float(p.get("score_base", p.get("score_base", 0.0)))
 
     pct_bk = (stake / bankroll) if bankroll > 0 else 0.0
     pct_day = (stake / daily_budget) if daily_budget > 0 else 0.0
@@ -86,7 +87,7 @@ def format_team_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_bud
         f"• EV: **{_pct(ev)}**\n"
         f"• Edge: **{_pct(edge_adj)}** (raw {_pct(edge_raw)})\n"
         f"• Dev vs median: **{_pct(dev)}**\n"
-        f"• Score (rank slate): **{score_rank:.0f}/100**  {_bar(score_rank)}  | base={score_base:.0f}\n\n"
+        f"• Score: **{score_adj:.0f}/100** (base {score_base:.0f})\n"
         f"{_flags_block(p)}\n\n"
         f"💰 **STAKE**\n"
         f"• Stake: **{pct_bk*100:.2f}% BK** ({_fmt_money(stake)}) — {pct_day*100:.2f}% day budget\n"

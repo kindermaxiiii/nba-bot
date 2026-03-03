@@ -3,4 +3,6 @@
   "daily_budget_pct": 0.10,
   "max_team_bets_per_day": 3,
   "max_prop_bets_per_day": 3
+  "min_bookmakers": 2,
+  "prefer_fr_books": false
 }

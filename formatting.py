@@ -1,117 +1,76 @@
-from typing import Any, Dict, List, Optional
+def format_team_pick(pick, stake, bankroll, daily_budget, daily_spent):
+    return f"""
+🏀 NBA — TEAM PICK
 
-def _pct(x: float) -> str:
-    return f"{x*100:.2f}%"
+Match: {pick.get("match")}
+Marché: {pick.get("market")}
+Ligne: {pick.get("line")}
+Sélection: {pick.get("selection")}
 
-def _maybe(v: Optional[float], fmt: str = "{:.2f}") -> str:
-    if v is None:
-        return "n/a"
-    try:
-        return fmt.format(float(v))
-    except Exception:
-        return "n/a"
+Cote: {pick.get("odds")} ({pick.get("book")})
+Médiane: {pick.get("median_odds")}
+Books: {pick.get("books_used")}/{pick.get("total_books")}
 
-def _bullet(lines: List[str]) -> str:
-    return "\n".join([f"• {x}" for x in lines if x])
+P_real: {round(pick.get("fair_prob", 0)*100,2)}%
+P_mkt: {round(pick.get("fair_prob_raw", 0)*100,2)}%
 
-def _injury_minutes_block(p: Dict[str, Any]) -> str:
-    parts = []
-    if p.get("injury_note"):
-        parts.append(f"**Injuries:** {p['injury_note']}")
-    if p.get("minutes_note"):
-        parts.append(f"**Minutes:** {p['minutes_note']}")
-    if p.get("minutes_confidence") is not None:
-        parts.append(f"**Minutes confidence:** {_pct(float(p['minutes_confidence']))}")
-    if p.get("minutes_fragility") is not None:
-        parts.append(f"**Minutes fragility:** {float(p['minutes_fragility']):.1f}/10")
-    return "\n".join(parts)
+Edge: {round(pick.get("edge", 0)*100,2)}%
+EV: {round(pick.get("ev", 0)*100,2)}%
+Dev: {round(pick.get("dev", 0)*100,2)}%
 
-def format_team_pick(p: Dict[str, Any], rank: int) -> str:
-    match = p.get("match", "")
-    market = p.get("market", "TEAM")
-    selection = p.get("selection", "")
-    line = p.get("line")
+Score: {round(pick.get("score_adj", 0),1)}/100
 
-    odds = float(p.get("odds", 0.0))
-    book = p.get("book", "Unknown")
-    median_odds = p.get("median_odds")
-    books_used = p.get("books_used")
-    total_books = p.get("total_books")
+💰 Stake: {round(stake,2)}€
+Budget utilisé: {round(daily_spent,2)}/{round(daily_budget,2)}€
+"""
 
-    fair = float(p.get("fair_prob", 0.0))
-    edge = float(p.get("edge", 0.0))
-    dev = float(p.get("dev", 0.0))
-    ev = float(p.get("ev", fair * odds - 1.0))
-    score = float(p.get("score", 0.0))
-    score_adj = float(p.get("score_adj", score))
 
-    why = p.get("why", [])
-    stats = p.get("stats_justif", [])
+def format_prop_pick(pick, stake, bankroll, daily_budget, daily_spent):
+    return f"""
+🎯 NBA — PLAYER PROP
 
-    return (
-        f"**#{rank} — TEAM PICK**\n"
-        f"**Match:** {match}\n"
-        f"**Marché:** {market}\n"
-        + (f"**Line:** {line}\n" if line is not None else "")
-        + f"**Sélection:** {selection}\n"
-        f"**Best:** {odds:.2f} ({book}) | **Médiane:** {_maybe(median_odds)} | **Books:** {books_used}/{total_books}\n"
-        f"**p_fair:** {_pct(fair)} | **EV:** {_pct(ev)} | **Edge:** {_pct(edge)} | **Dev:** {_pct(dev)}\n"
-        f"**Score_adj:** {score_adj:.1f}/100\n\n"
-        f"**Pourquoi ce pick**\n{_bullet(list(why))}\n\n"
-        f"**Justification statistique**\n{_bullet(list(stats))}\n\n"
-        f"{_injury_minutes_block(p)}"
-    ).strip()
+Match: {pick.get("match")}
+Joueur: {pick.get("player")}
+Marché: {pick.get("market")}
+Ligne: {pick.get("line")}
+Sélection: {pick.get("selection")}
 
-def format_prop_pick(p: Dict[str, Any], rank: int) -> str:
-    match = p.get("match", "")
-    market = p.get("market", "PROP")
-    player = p.get("player", "")
-    side = p.get("selection", "")
-    line = p.get("line")
+Cote: {pick.get("odds")} ({pick.get("book")})
+Médiane: {pick.get("median_odds")}
+Books: {pick.get("books_used")}/{pick.get("total_books")}
 
-    odds = float(p.get("odds", 0.0))
-    book = p.get("book", "Unknown")
-    median_odds = p.get("median_odds")
-    books_used = p.get("books_used")
-    total_books = p.get("total_books")
+P_real: {round(pick.get("fair_prob", 0)*100,2)}%
+P_mkt: {round(pick.get("fair_prob_raw", 0)*100,2)}%
 
-    fair = float(p.get("fair_prob", 0.0))
-    edge = float(p.get("edge", 0.0))
-    dev = float(p.get("dev", 0.0))
-    ev = float(p.get("ev", fair * odds - 1.0))
-    score = float(p.get("score", 0.0))
-    score_adj = float(p.get("score_adj", score))
+Edge: {round(pick.get("edge", 0)*100,2)}%
+EV: {round(pick.get("ev", 0)*100,2)}%
+Dev: {round(pick.get("dev", 0)*100,2)}%
 
-    why = p.get("why", [])
-    stats = p.get("stats_justif", [])
+Score: {round(pick.get("score_adj", 0),1)}/100
 
-    sel = f"{player} — {side} {line}" if line is not None else f"{player} — {side}"
+💰 Stake: {round(stake,2)}€
+Budget utilisé: {round(daily_spent,2)}/{round(daily_budget,2)}€
+"""
 
-    return (
-        f"**#{rank} — PLAYER PROP**\n"
-        f"**Match:** {match}\n"
-        f"**Marché:** {market}\n"
-        f"**Sélection:** {sel}\n"
-        f"**Best:** {odds:.2f} ({book}) | **Médiane:** {_maybe(median_odds)} | **Books:** {books_used}/{total_books}\n"
-        f"**p_fair:** {_pct(fair)} | **EV:** {_pct(ev)} | **Edge:** {_pct(edge)} | **Dev:** {_pct(dev)}\n"
-        f"**Score_adj:** {score_adj:.1f}/100\n\n"
-        f"**Pourquoi ce pick**\n{_bullet(list(why))}\n\n"
-        f"**Justification statistique**\n{_bullet(list(stats))}\n\n"
-        f"{_injury_minutes_block(p)}"
-    ).strip()
 
-def format_no_bet(title: str, reason: str, regions_used: List[str], games_analyzed: int, markets_tested: int, top_rejects: List[str], near_miss_lines: List[str]) -> str:
-    regions_txt = ", ".join([r for r in regions_used if r]) if regions_used else "n/a"
-    rejects_block = "\n".join([f"• {x}" for x in top_rejects]) if top_rejects else "• (aucune donnée)"
-    near_block = "\n".join(near_miss_lines) if near_miss_lines else "Aucun near-miss."
+def format_no_bet(
+    title,
+    reason,
+    regions_used,
+    games_analyzed,
+    markets_tested,
+    top_rejects,
+    near_miss_lines,
+    daily_budget,
+    daily_spent
+):
+    return f"""
+❌ {title}
 
-    return (
-        f"**{title}**\n"
-        f"Raison: {reason}\n\n"
-        f"**Résumé analyse**\n"
-        f"• Regions utilisées: {regions_txt}\n"
-        f"• Matchs analysés: {games_analyzed}\n"
-        f"• Marchés testés: {markets_tested}\n\n"
-        f"**Refus principaux**\n{rejects_block}\n\n"
-        f"**Near miss (Top 5)**\n{near_block}\n"
-    )
+Raison: {reason}
+
+Matchs analysés: {games_analyzed}
+Marchés testés: {markets_tested}
+
+Budget jour: {round(daily_spent,2)} / {round(daily_budget,2)} €
+"""

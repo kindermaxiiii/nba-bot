@@ -323,7 +323,7 @@ def main():
     # Fetch TEAM odds
     try:
         team_games, meta = fetch_odds_with_fallback(
-            markets="h2h,spreads,totals,team_totals",
+            markets="h2h,spreads,totals",
             regions_priority=["us", "us2", "uk", "eu", "au", "fr"],
         )
         chosen_region = meta.get("chosen_region", "n/a")

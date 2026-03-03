@@ -15,7 +15,6 @@ def _maybe(v: Optional[float], fmt: str = "{:.2f}") -> str:
         return "n/a"
 
 def _bar(x: float, width: int = 18) -> str:
-    # x in [0,100]
     x = max(0.0, min(100.0, float(x)))
     filled = int(round((x / 100.0) * width))
     return "█" * filled + "░" * (width - filled)
@@ -38,25 +37,9 @@ def _flags_block(p: Dict[str, Any]) -> str:
     tier = p.get("tier", "STRICT")
     s = f"🧩 **FLAGS**\n• Tier: **{tier}**"
     if flags:
-        for f in flags[:6]:
+        for f in flags[:8]:
             s += f"\n• {f}"
     return s
-
-def _stats_block(p: Dict[str, Any]) -> str:
-    # For props: optional hitrate block
-    st = p.get("stat_context") or {}
-    if not st:
-        return ""
-    lines = []
-    if "last10_hit" in st:
-        lines.append(f"• Last10 hit rate: **{st['last10_hit']}**")
-    if "last5_hit" in st:
-        lines.append(f"• Last5 hit rate: **{st['last5_hit']}**")
-    if "avg10" in st:
-        lines.append(f"• Avg (10): **{st['avg10']}**")
-    if "n" in st:
-        lines.append(f"• Sample: n={st['n']}")
-    return "\n\n📊 **STATS QUICKCHECK**\n" + "\n".join(lines)
 
 def format_team_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_budget: float, spent_after: float) -> str:
     match = p.get("match", "")
@@ -76,28 +59,19 @@ def format_team_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_bud
     edge_adj = float(p.get("edge", 0.0))
     dev = float(p.get("dev", 0.0))
     ev = float(p.get("ev", fair_adj * odds - 1.0))
-    score = float(p.get("score", 0.0))
-    tier = p.get("tier", "STRICT")
-    haircut = bool(p.get("haircut_applied", False))
 
-    vig_med = p.get("vig_median")
-    sd = p.get("odds_stdev")
+    score_rank = float(p.get("score_rank", p.get("score", 0.0)))
+    score_base = float(p.get("score_base", 0.0))
 
     pct_bk = (stake / bankroll) if bankroll > 0 else 0.0
     pct_day = (stake / daily_budget) if daily_budget > 0 else 0.0
 
-    injury_note = p.get("injury_note")
-    minutes_note = p.get("minutes_note")
-
     ctx = []
-    if injury_note:
-        ctx.append(f"• Injuries: {injury_note}")
-    if minutes_note:
-        ctx.append(f"• Minutes proj.: {minutes_note}")
-
+    if p.get("injury_note"):
+        ctx.append(f"• Injuries: {p['injury_note']}")
+    if p.get("minutes_note"):
+        ctx.append(f"• Minutes proj.: {p['minutes_note']}")
     ctx_block = ("\n\n🧠 **CONTEXT**\n" + "\n".join(ctx)) if ctx else ""
-
-    quality = "✅" if score >= 80 else "⚠️"
 
     return (
         f"✅ **NBA TEAM BET**\n"
@@ -110,9 +84,9 @@ def format_team_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_bud
         f"• Books (median calc): **{books_used}** | Total books: **{total_books}** | Median odds: **{_maybe(median_odds)}**\n"
         f"• p_fair: **{_pct(fair_adj)}** (raw {_pct(fair_raw)})\n"
         f"• EV: **{_pct(ev)}**\n"
-        f"• Edge: **{_pct(edge_adj)}** (raw {_pct(edge_raw)}) {'✂️ haircut' if haircut else ''}\n"
-        f"• Dev vs median: **{_pct(dev)}** | σ_odds: {_maybe(sd)} | vig(median): {_maybe(vig_med)}\n"
-        f"• Score: **{score:.0f}/100** {quality}  {_bar(score)}\n\n"
+        f"• Edge: **{_pct(edge_adj)}** (raw {_pct(edge_raw)})\n"
+        f"• Dev vs median: **{_pct(dev)}**\n"
+        f"• Score (rank slate): **{score_rank:.0f}/100**  {_bar(score_rank)}  | base={score_base:.0f}\n\n"
         f"{_flags_block(p)}\n\n"
         f"💰 **STAKE**\n"
         f"• Stake: **{pct_bk*100:.2f}% BK** ({_fmt_money(stake)}) — {pct_day*100:.2f}% day budget\n"
@@ -137,16 +111,9 @@ def format_prop_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_bud
     edge_adj = float(p.get("edge", 0.0))
     dev = float(p.get("dev", 0.0))
     ev = float(p.get("ev", fair_adj * odds - 1.0))
-    score = float(p.get("score", 0.0))
-    tier = p.get("tier", "STRICT")
-    haircut = bool(p.get("haircut_applied", False))
 
-    median_odds = p.get("median_odds")
-    books_used = p.get("books_used")
-    total_books = p.get("total_books")
-
-    injury_note = p.get("injury_note")
-    minutes_note = p.get("minutes_note")
+    score_rank = float(p.get("score_rank", p.get("score", 0.0)))
+    score_base = float(p.get("score_base", 0.0))
 
     pct_bk = (stake / bankroll) if bankroll > 0 else 0.0
     pct_day = (stake / daily_budget) if daily_budget > 0 else 0.0
@@ -154,13 +121,11 @@ def format_prop_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_bud
     sel = f"{player} — {side} {line}" if line is not None else f"{player} — {side}"
 
     ctx = []
-    if injury_note:
-        ctx.append(f"• Injuries: {injury_note}")
-    if minutes_note:
-        ctx.append(f"• Minutes proj.: {minutes_note}")
+    if p.get("injury_note"):
+        ctx.append(f"• Injuries: {p['injury_note']}")
+    if p.get("minutes_note"):
+        ctx.append(f"• Minutes proj.: {p['minutes_note']}")
     ctx_block = ("\n\n🧠 **CONTEXT**\n" + "\n".join(ctx)) if ctx else ""
-
-    quality = "✅" if score >= 80 else "⚠️"
 
     return (
         f"✅ **NBA PLAYER PROP**\n"
@@ -169,17 +134,15 @@ def format_prop_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_bud
         f"**Pick:** **{sel}**\n"
         f"**Best:** {odds:.2f} (**{book}**)\n\n"
         f"📌 **VALUE METRICS**\n"
-        f"• Books (median calc): **{books_used}** | Total books: **{total_books}** | Median odds: **{_maybe(median_odds)}**\n"
         f"• p_fair: **{_pct(fair_adj)}** (raw {_pct(fair_raw)})\n"
         f"• EV: **{_pct(ev)}**\n"
-        f"• Edge: **{_pct(edge_adj)}** (raw {_pct(edge_raw)}) {'✂️ haircut' if haircut else ''}\n"
+        f"• Edge: **{_pct(edge_adj)}** (raw {_pct(edge_raw)})\n"
         f"• Dev vs median: **{_pct(dev)}**\n"
-        f"• Score: **{score:.0f}/100** {quality}  {_bar(score)}\n\n"
+        f"• Score (rank slate): **{score_rank:.0f}/100**  {_bar(score_rank)}  | base={score_base:.0f}\n\n"
         f"{_flags_block(p)}\n\n"
         f"💰 **STAKE**\n"
         f"• Stake: **{pct_bk*100:.2f}% BK** ({_fmt_money(stake)}) — {pct_day*100:.2f}% day budget\n"
         f"• Day budget: {_fmt_money(daily_budget)} | Spent after: {_fmt_money(spent_after)}"
-        + _stats_block(p)
         + ctx_block
         + _clv_block(p)
         + "\n\n_Props: 1 pick/player & 1 pick/match (as possible)._"

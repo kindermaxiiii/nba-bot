@@ -16,6 +16,7 @@ from engine import (
     analyze_two_way_market,
     diversify_team_picks,
     diversify_prop_picks,
+    allocate_stakes_capped,
 )
 
 from formatting import format_team_pick, format_prop_pick, format_no_bet
@@ -32,18 +33,24 @@ PROPS_WEBHOOK = os.environ.get("DISCORD_PROPS_WEBHOOK")
 LOG_WEBHOOK = os.environ.get("DISCORD_LOG_WEBHOOK")
 
 CLV_REFRESH_MINUTES = 30
-CLV_MAX_SNAPSHOTS = 4  # T0 + 3 refresh
-CLV_HORIZON_HOURS = 6  # stop tracking after 6h
+CLV_MAX_SNAPSHOTS = 4
+CLV_HORIZON_HOURS = 6
 
 
 # -------------------------
-# LOAD CONFIG + STATE
+# LOAD CONFIG + STATE (safe)
 # -------------------------
 with open("config.json", "r", encoding="utf-8") as f:
     CONFIG = json.load(f)
 
-with open("state.json", "r", encoding="utf-8") as f:
-    STATE = json.load(f)
+def _load_state_safe(path: str = "state.json") -> Dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+STATE = _load_state_safe()
 
 BANKROLL = float(CONFIG["bankroll_eur"])
 DAILY_BUDGET = BANKROLL * float(CONFIG["daily_budget_pct"])
@@ -63,9 +70,9 @@ PREFER_FR_BOOKS = bool(CONFIG.get("prefer_fr_books", True))
 MAX_ML_PER_SLATE = int(CONFIG.get("max_ml_per_slate", 2))
 ONE_PICK_PER_MATCH = bool(CONFIG.get("one_pick_per_match", True))
 
-# cap ABSOLU par bet (en % du budget jour)
-MAX_SINGLE_STAKE_SHARE_DAY = float(CONFIG.get("max_single_stake_share_day", 0.20))  # 20% day budget par bet
+MAX_SINGLE_STAKE_SHARE = float(CONFIG.get("max_single_stake_share", 0.45))
 
+# Ladder (STRICT then relax)
 LADDER = [
     {"tier": "STRICT",  "edge": EDGE_THRESHOLD_STRICT, "dev": DEV_THRESHOLD_STRICT},
     {"tier": "RELAXED", "edge": max(0.010, EDGE_THRESHOLD_STRICT * 0.67), "dev": max(0.015, DEV_THRESHOLD_STRICT * 0.75)},
@@ -73,13 +80,11 @@ LADDER = [
 ]
 
 TEAM_MARKETS_BASE = "h2h,spreads,totals"
-TEAM_MARKETS_OPTIONAL = [
-    "team_totals",
-    "h2h_h1",
-    "spreads_h1",
-    "totals_h1",
-    "team_totals_h1",
-]
+TEAM_MARKETS_OPTIONAL = ["team_totals", "h2h_h1", "spreads_h1", "totals_h1", "team_totals_h1"]
+
+# how many picks we target per run (cap by remaining slots)
+TARGET_TEAM = 3
+TARGET_PROPS = 3
 
 
 def post_discord(webhook: str, title: str, description: str):
@@ -142,8 +147,7 @@ def clv_get_store() -> Dict[str, Any]:
 
 def clv_attach(p: Dict[str, Any]) -> Dict[str, Any]:
     store = clv_get_store()
-    pid = pick_id(p)
-    rec = store.get(pid) or {}
+    rec = store.get(pick_id(p)) or {}
     p["clv_snapshots"] = rec.get("snapshots") or []
     return p
 
@@ -158,12 +162,7 @@ def clv_add_snapshot(p: Dict[str, Any], tag: str, odds: float, book: str):
         rec = {"created_ts": now, "snapshots": []}
         store[pid] = rec
 
-    rec["snapshots"].append({
-        "tag": tag,
-        "odds": float(odds),
-        "book": str(book),
-        "ts_utc": now,
-    })
+    rec["snapshots"].append({"tag": tag, "odds": float(odds), "book": str(book), "ts_utc": now})
     rec["snapshots"] = rec["snapshots"][-CLV_MAX_SNAPSHOTS:]
 
 
@@ -196,6 +195,11 @@ def clv_should_refresh(rec: Dict[str, Any]) -> bool:
         return True
 
 
+def merge_rejects(dst: Dict[str, int], src: Dict[str, int]):
+    for k, v in (src or {}).items():
+        dst[k] = dst.get(k, 0) + int(v)
+
+
 def build_near_miss_line(p: Dict[str, Any]) -> str:
     line_part = f" {p['line']}" if p.get("line") is not None else ""
     who = p.get("player") or p.get("selection")
@@ -206,45 +210,33 @@ def build_near_miss_line(p: Dict[str, Any]) -> str:
     )
 
 
-def merge_rejects(dst: Dict[str, int], src: Dict[str, int]):
-    for k, v in (src or {}).items():
-        dst[k] = dst.get(k, 0) + int(v)
-
-
-def _should_force_us(meta: Dict[str, Any]) -> bool:
-    if (meta or {}).get("chosen_region") != "fr":
-        return False
-    unique_books = int(meta.get("unique_books") or 0)
-    total_books = int(meta.get("total_books") or 0)
-    return (unique_books < 3) or (total_books < 15)
-
-
 def fetch_team_games_all_markets() -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    1) fetch base markets FR first
+    2) if FR returns too few unique books, force fallback US
+    3) try optional markets one by one (if plan supports them) and merge into games by id
+    """
     games, meta = fetch_odds_with_fallback(
         markets=TEAM_MARKETS_BASE,
         regions_priority=["fr", "us", "us2", "uk", "eu", "au"],
     )
 
-    # 🔥 Force US fallback si FR pauvre
-    if _should_force_us(meta):
-        games, meta = fetch_odds_with_fallback(
-            markets=TEAM_MARKETS_BASE,
-            regions_priority=["us", "us2", "uk", "eu", "au"],
-        )
+    if meta.get("chosen_region") == "fr":
+        total_books = sum(len(g.get("bookmakers", []) or []) for g in (games or []))
+        if total_books < 15:
+            games, meta = fetch_odds_with_fallback(
+                markets=TEAM_MARKETS_BASE,
+                regions_priority=["us", "us2", "uk", "eu", "au"],
+            )
 
     games_by_id: Dict[str, Dict[str, Any]] = {g.get("id"): g for g in games if g.get("id")}
 
     for mk in TEAM_MARKETS_OPTIONAL:
         try:
-            g2, meta2 = fetch_odds_with_fallback(
+            g2, _ = fetch_odds_with_fallback(
                 markets=mk,
                 regions_priority=["fr", "us", "us2", "uk", "eu", "au"],
             )
-            if _should_force_us(meta2):
-                g2, _meta_us = fetch_odds_with_fallback(
-                    markets=mk,
-                    regions_priority=["us", "us2", "uk", "eu", "au"],
-                )
         except OddsApiError:
             continue
 
@@ -295,8 +287,7 @@ def analyze_team_game(g: Dict[str, Any], injuries: List[Dict[str, Any]], stats: 
     injury_note = build_injury_note(match, injuries)
     candidates: List[Dict[str, Any]] = []
 
-    def run_two_way(market_label: str, line_val: Optional[float], a_key: str, b_key: str, a_entries, b_entries,
-                    tier: str, edge_th: float, dev_th: float):
+    def run_two_way(market_label: str, line_val: Optional[float], a_key: str, b_key: str, a_entries, b_entries, tier: str, edge_th: float, dev_th: float):
         out = analyze_two_way_market(
             match=match,
             market_label=market_label,
@@ -403,32 +394,6 @@ def analyze_team_game(g: Dict[str, Any], injuries: List[Dict[str, Any]], stats: 
     return candidates
 
 
-def patch_spread_signed_line(pick: Dict[str, Any], game: Dict[str, Any], market_key: str = "spreads") -> Dict[str, Any]:
-    if "SPREAD" not in str(pick.get("market", "")):
-        return pick
-
-    selection = pick.get("selection")
-    bookmakers = game.get("bookmakers", []) or []
-    spreads_lines = collect_market_lines(bookmakers, market_key)["lines"]
-    slk = pick_consensus_line(spreads_lines)
-    if not slk or slk not in spreads_lines:
-        return pick
-
-    teams = spreads_lines[slk]
-    if selection not in teams:
-        return pick
-
-    chosen_book = pick.get("book")
-    for e in teams[selection]:
-        if e.get("book") == chosen_book and e.get("point") is not None:
-            pick["line"] = float(e["point"])
-            return pick
-
-    if teams[selection] and teams[selection][0].get("point") is not None:
-        pick["line"] = float(teams[selection][0]["point"])
-    return pick
-
-
 def analyze_props(injuries: List[Dict[str, Any]], stats: Dict[str, Any]) -> List[Dict[str, Any]]:
     prop_market_map = {
         "PROP PTS": "player_points",
@@ -447,13 +412,8 @@ def analyze_props(injuries: List[Dict[str, Any]], stats: Dict[str, Any]) -> List
         try:
             games, meta = fetch_odds_with_fallback(
                 markets=market_key,
-                regions_priority=["fr", "us", "us2", "uk", "eu", "au"],
+                regions_priority=["us", "us2", "uk", "eu", "au", "fr"],  # props = depth first
             )
-            if _should_force_us(meta):
-                games, meta = fetch_odds_with_fallback(
-                    markets=market_key,
-                    regions_priority=["us", "us2", "uk", "eu", "au"],
-                )
         except OddsApiError:
             continue
 
@@ -469,7 +429,6 @@ def analyze_props(injuries: List[Dict[str, Any]], stats: Dict[str, Any]) -> List
                 continue
 
             injury_note = build_injury_note(match, injuries)
-
             props_struct = collect_player_prop_lines(bookmakers, market_key)["props"]
 
             for player, player_lines in props_struct.items():
@@ -496,7 +455,7 @@ def analyze_props(injuries: List[Dict[str, Any]], stats: Dict[str, Any]) -> List
                         tier=rung["tier"],
                         return_all=True,
                     )
-
+                    stats["props_tested"] += 1
                     merge_rejects(stats["rejects"], out.get("rejects", {}))
                     stats["near_miss"].extend(out.get("all", []))
 
@@ -514,116 +473,51 @@ def analyze_props(injuries: List[Dict[str, Any]], stats: Dict[str, Any]) -> List
     return candidates
 
 
-def refresh_clv_from_current_games(team_games: List[Dict[str, Any]]):
-    store = clv_get_store()
-    if not store:
-        return
-
-    games_by_match: Dict[str, Dict[str, Any]] = {}
-    for g in team_games or []:
-        match = f"{g.get('away_team')} @ {g.get('home_team')}"
-        games_by_match[match] = g
-
-    now = datetime.now(timezone.utc)
-    for pid, rec in list(store.items()):
-        if not isinstance(rec, dict) or not clv_should_refresh(rec):
-            continue
-
-        try:
-            match, market, _player, selection, _line_str = pid.split("|", 4)
-        except Exception:
-            continue
-
-        g = games_by_match.get(match)
-        if not g:
-            continue
-
-        bookmakers = g.get("bookmakers", []) or []
-        best = None
-
-        if market == "MONEYLINE":
-            h2h_lines = collect_market_lines(bookmakers, "h2h")["lines"]
-            lk = pick_consensus_line(h2h_lines)
-            if lk and lk in h2h_lines and selection in h2h_lines[lk]:
-                best = max(h2h_lines[lk][selection], key=lambda e: float(e.get("price") or 0.0), default=None)
-
-        elif market == "TOTAL":
-            totals_lines = collect_market_lines(bookmakers, "totals")["lines"]
-            lk = pick_consensus_line(totals_lines)
-            if lk and lk in totals_lines and selection in totals_lines[lk]:
-                best = max(totals_lines[lk][selection], key=lambda e: float(e.get("price") or 0.0), default=None)
-
-        elif "SPREAD" in market:
-            spreads_lines = collect_market_lines(bookmakers, "spreads")["lines"]
-            lk = pick_consensus_line(spreads_lines)
-            if lk and lk in spreads_lines and selection in spreads_lines[lk]:
-                best = max(spreads_lines[lk][selection], key=lambda e: float(e.get("price") or 0.0), default=None)
-
-        snaps = rec.get("snapshots") or []
-        tag = "T+30"
-        if len(snaps) == 2:
-            tag = "T+60"
-        elif len(snaps) >= 3:
-            tag = "T+90"
-
-        if best and best.get("price"):
-            rec["snapshots"].append({
-                "tag": tag,
-                "odds": float(best["price"]),
-                "book": str(best.get("book", "")),
-                "ts_utc": now.isoformat(),
-            })
-            rec["snapshots"] = rec["snapshots"][-CLV_MAX_SNAPSHOTS:]
-            store[pid] = rec
-
-    STATE["clv"] = store
-
-
-def _allocate_stakes_safe(total_budget: float, n: int, max_single_abs: float) -> List[float]:
+def _fill_picks(
+    candidates: List[Dict[str, Any]],
+    already: List[Dict[str, Any]],
+    target: int,
+    *,
+    allow_same_match: bool,
+    allow_same_player: bool,
+) -> List[Dict[str, Any]]:
     """
-    Distribute total_budget across n picks with a hard absolute cap per pick (max_single_abs).
+    If diversification returns < target, we fill with next best unique picks.
     """
-    if n <= 0 or total_budget <= 0:
-        return []
-    cap = max(0.0, float(max_single_abs))
-    if cap <= 0:
-        # no cap => equal split
-        x = total_budget / n
-        return [x] * n
+    if len(already) >= target:
+        return already
 
-    # start equal split
-    base = total_budget / n
-    stakes = [min(base, cap)] * n
-    used = sum(stakes)
-    leftover = total_budget - used
+    used_pid = {pick_id(p) for p in already}
+    used_match = {p.get("match") for p in already}
+    used_player = {p.get("player") for p in already if p.get("player")}
 
-    # redistribute leftover while respecting cap
-    i = 0
-    guard = 0
-    while leftover > 1e-9 and guard < 10000:
-        guard += 1
-        if stakes[i] + 1e-9 < cap:
-            add = min(cap - stakes[i], leftover)
-            stakes[i] += add
-            leftover -= add
-        i = (i + 1) % n
-        # if everyone capped, stop
-        if all(s + 1e-9 >= cap for s in stakes):
+    # best first
+    ranked = sorted(candidates, key=lambda x: (x.get("score", 0.0), x.get("edge", 0.0), x.get("dev", 0.0)), reverse=True)
+
+    out = list(already)
+    for c in ranked:
+        if len(out) >= target:
             break
+        pid = pick_id(c)
+        if pid in used_pid:
+            continue
+        if (not allow_same_match) and c.get("match") in used_match:
+            continue
+        if (not allow_same_player) and c.get("player") and c.get("player") in used_player:
+            continue
 
-    # round cents
-    stakes = [round(s, 2) for s in stakes]
-    # ensure not exceeding budget due to rounding
-    diff = round(sum(stakes) - total_budget, 2)
-    if diff > 0:
-        # subtract diff from last stake(s)
-        for j in range(n - 1, -1, -1):
-            take = min(diff, stakes[j])
-            stakes[j] = round(stakes[j] - take, 2)
-            diff = round(diff - take, 2)
-            if diff <= 0:
-                break
-    return stakes
+        # tag so you see it was a fill
+        c = dict(c)
+        c["tier"] = str(c.get("tier") or "RELAXED")
+        c["flags"] = (c.get("flags") or []) + ["FILL"]
+        out.append(c)
+
+        used_pid.add(pid)
+        used_match.add(c.get("match"))
+        if c.get("player"):
+            used_player.add(c.get("player"))
+
+    return out
 
 
 def main():
@@ -638,13 +532,10 @@ def main():
     except Exception:
         injuries = []
 
-    stats_team = {
-        "games_analyzed": 0,
-        "markets_tested": 0,
-        "rejects": {},
-        "near_miss": [],
-        "region": None,
-    }
+    # -------------------------
+    # TEAM
+    # -------------------------
+    stats_team = {"games_analyzed": 0, "markets_tested": 0, "rejects": {}, "near_miss": [], "region": None}
 
     try:
         team_games, team_meta = fetch_team_games_all_markets()
@@ -653,8 +544,6 @@ def main():
     except OddsApiError:
         team_games, team_meta = [], {}
         stats_team["region"] = None
-
-    refresh_clv_from_current_games(team_games)
 
     team_candidates: List[Dict[str, Any]] = []
     games_by_match: Dict[str, Dict[str, Any]] = {}
@@ -667,56 +556,67 @@ def main():
         games_by_match[match] = g
         team_candidates.extend(analyze_team_game(g, injuries, stats_team))
 
-    near_sorted = sorted(
-        stats_team["near_miss"],
-        key=lambda x: (x.get("edge", 0.0), x.get("dev", 0.0), x.get("score", 0.0)),
-        reverse=True,
-    )
+    near_sorted = sorted(stats_team["near_miss"], key=lambda x: (x.get("edge", 0.0), x.get("dev", 0.0), x.get("score", 0.0)), reverse=True)
     near_lines = [build_near_miss_line(p) for p in near_sorted[:5]]
+    top_rejects = [f"{k}: {v}" for k, v in sorted(stats_team["rejects"].items(), key=lambda kv: kv[1], reverse=True)[:6]]
 
-    rejects_items = sorted(stats_team["rejects"].items(), key=lambda kv: kv[1], reverse=True)[:6]
-    top_rejects = [f"{k}: {v}" for k, v in rejects_items]
-
-    stats_props = {
-        "rejects": {},
-        "near_miss": [],
-        "regions_props": None,
-    }
-
+    # -------------------------
+    # PROPS
+    # -------------------------
+    stats_props = {"props_tested": 0, "rejects": {}, "near_miss": [], "regions_props": None}
     prop_candidates: List[Dict[str, Any]] = []
     if remaining_props_slots > 0 and remaining_budget_total > 0:
         prop_candidates = analyze_props(injuries, stats_props)
         STATE["last_regions_props"] = stats_props.get("regions_props")
 
+    # -------------------------
+    # PICK 3 + 3 (diversify then fill)
+    # -------------------------
+    team_target = min(TARGET_TEAM, remaining_team_slots)
+    props_target = min(TARGET_PROPS, remaining_props_slots)
+
     team_picks: List[Dict[str, Any]] = []
     prop_picks: List[Dict[str, Any]] = []
 
-    if remaining_team_slots > 0:
+    if team_target > 0:
         team_picks = diversify_team_picks(
             team_candidates,
-            max_picks=min(remaining_team_slots, 3),
+            max_picks=team_target,
             max_ml=MAX_ML_PER_SLATE,
             one_pick_per_match=ONE_PICK_PER_MATCH,
         )
-        patched = []
-        for p in team_picks:
-            g = games_by_match.get(p.get("match"))
-            if g:
-                p = patch_spread_signed_line(p, g, market_key="spreads")
-            patched.append(p)
-        team_picks = patched
+        # if not enough, fill (first keep one_pick_per_match, then allow duplicates if still short)
+        team_picks = _fill_picks(team_candidates, team_picks, team_target, allow_same_match=False, allow_same_player=True)
+        if len(team_picks) < team_target:
+            team_picks = _fill_picks(team_candidates, team_picks, team_target, allow_same_match=True, allow_same_player=True)
 
-    if remaining_props_slots > 0:
+    if props_target > 0:
         prop_picks = diversify_prop_picks(
             prop_candidates,
-            max_picks=min(remaining_props_slots, 3),
+            max_picks=props_target,
             one_pick_per_match=True,
             one_pick_per_player=True,
         )
+        # fill: keep strict constraints first, then relax match constraint, but keep one_pick_per_player
+        prop_picks = _fill_picks(prop_candidates, prop_picks, props_target, allow_same_match=False, allow_same_player=False)
+        if len(prop_picks) < props_target:
+            prop_picks = _fill_picks(prop_candidates, prop_picks, props_target, allow_same_match=True, allow_same_player=False)
 
-    # Budgets plafonnés (ne pas donner 100% aux TEAM si props vides)
-    team_budget = remaining_budget_total * TEAM_BUDGET_SHARE if team_picks else 0.0
-    props_budget = remaining_budget_total * PROPS_BUDGET_SHARE if prop_picks else 0.0
+    # -------------------------
+    # Budget allocation FIX:
+    # Do NOT spend full share if you only found 1-2 picks.
+    # Scale share by (count/target).
+    # -------------------------
+    team_budget = 0.0
+    props_budget = 0.0
+
+    if team_picks and team_target > 0:
+        scale = min(1.0, len(team_picks) / float(team_target))
+        team_budget = remaining_budget_total * TEAM_BUDGET_SHARE * scale
+
+    if prop_picks and props_target > 0:
+        scale = min(1.0, len(prop_picks) / float(props_target))
+        props_budget = remaining_budget_total * PROPS_BUDGET_SHARE * scale
 
     if not team_picks and not prop_picks:
         desc = format_no_bet(
@@ -734,11 +634,11 @@ def main():
         save_state()
         return
 
-    max_single_abs = DAILY_BUDGET * MAX_SINGLE_STAKE_SHARE_DAY
-
+    # -------------------------
     # SEND TEAM
+    # -------------------------
     if team_picks and team_budget > 0:
-        stakes_team = _allocate_stakes_safe(team_budget, len(team_picks), max_single_abs=max_single_abs)
+        stakes_team = allocate_stakes_capped(team_budget, len(team_picks), max_single_share=MAX_SINGLE_STAKE_SHARE)
         for pick, stake in zip(team_picks, stakes_team):
             if stake <= 0:
                 continue
@@ -747,22 +647,18 @@ def main():
             clv_add_snapshot(pick, "T0", float(pick["odds"]), str(pick.get("book", "")))
             pick = clv_attach(pick)
 
-            msg = format_team_pick(
-                p=pick,
-                stake=stake,
-                bankroll=BANKROLL,
-                daily_budget=DAILY_BUDGET,
-                spent_after=spent_after,
-            )
+            msg = format_team_pick(pick, stake, BANKROLL, DAILY_BUDGET, spent_after)
             post_discord(TEAM_WEBHOOK, "✅ NBA TEAM BET", msg)
 
             STATE["daily_spent_eur"] = spent_after
             STATE["team_bets_sent"] = int(STATE.get("team_bets_sent", 0)) + 1
             STATE["team_spent_eur"] = float(STATE.get("team_spent_eur", 0.0)) + stake
 
+    # -------------------------
     # SEND PROPS
+    # -------------------------
     if prop_picks and props_budget > 0:
-        stakes_props = _allocate_stakes_safe(props_budget, len(prop_picks), max_single_abs=max_single_abs)
+        stakes_props = allocate_stakes_capped(props_budget, len(prop_picks), max_single_share=MAX_SINGLE_STAKE_SHARE)
         for pick, stake in zip(prop_picks, stakes_props):
             if stake <= 0:
                 continue
@@ -771,13 +667,7 @@ def main():
             clv_add_snapshot(pick, "T0", float(pick["odds"]), str(pick.get("book", "")))
             pick = clv_attach(pick)
 
-            msg = format_prop_pick(
-                p=pick,
-                stake=stake,
-                bankroll=BANKROLL,
-                daily_budget=DAILY_BUDGET,
-                spent_after=spent_after,
-            )
+            msg = format_prop_pick(pick, stake, BANKROLL, DAILY_BUDGET, spent_after)
             post_discord(PROPS_WEBHOOK, "✅ NBA PLAYER PROP", msg)
 
             STATE["daily_spent_eur"] = spent_after

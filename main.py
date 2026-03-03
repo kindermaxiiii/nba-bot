@@ -21,7 +21,7 @@ from engine import (
 
 from formatting import format_team_pick, format_prop_pick, format_no_bet
 
-# context.py must exist; if some functions are missing, we handle gracefully
+# context.py optional
 try:
     from context import (
         fetch_injuries,
@@ -51,9 +51,6 @@ PROPS_WEBHOOK = os.environ.get("DISCORD_PROPS_WEBHOOK")
 LOG_WEBHOOK = os.environ.get("DISCORD_LOG_WEBHOOK")
 
 
-# -------------------------
-# LOAD CONFIG + STATE
-# -------------------------
 def load_json_file(path: str) -> Dict[str, Any]:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -93,9 +90,6 @@ ALPHA_TEAM_DEFAULT = float(CONFIG.get("alpha_team", 0.70))
 ALPHA_PROPS_DEFAULT = float(CONFIG.get("alpha_props", 0.75))
 
 
-# -------------------------
-# UTILS
-# -------------------------
 def save_state():
     with open("state.json", "w", encoding="utf-8") as f:
         json.dump(STATE, f, indent=2, ensure_ascii=False)
@@ -174,9 +168,6 @@ def find_player_features(player_features: Dict[str, Any], player_name: str) -> O
     return None
 
 
-# -------------------------
-# CANDIDATE BUILDERS
-# -------------------------
 def add_two_way_team(
     out: List[Dict[str, Any]],
     g: Dict[str, Any],
@@ -196,7 +187,6 @@ def add_two_way_team(
 
     match = f"{away} @ {home}"
 
-    # 1) pass market only -> get p_mkt
     base = analyze_two_way_market(
         match=match,
         market_label=market_label,
@@ -218,7 +208,6 @@ def add_two_way_team(
         base[1]["selection"]: float(base[1]["fair_prob_raw"]),
     }
 
-    # 2) model probabilities
     p_model_a = model_prob_for_team_market(market_label, a, line, away, home, team_features)
     p_model_b = model_prob_for_team_market(market_label, b, line, away, home, team_features)
 
@@ -231,7 +220,6 @@ def add_two_way_team(
         p_real_a = _clamp(alpha * float(p_model_a) + (1.0 - alpha) * pmkt.get(a, 0.5))
         p_real_b = _clamp(alpha * float(p_model_b) + (1.0 - alpha) * pmkt.get(b, 0.5))
 
-    # 3) final (with p_real)
     final = analyze_two_way_market(
         match=match,
         market_label=market_label,
@@ -297,7 +285,7 @@ def build_team_candidates(
         if home in teams and away in teams:
             add_two_way_team(out, g, injuries, team_features, "SPREAD", float(slk), home, away, teams[home], teams[away])
 
-    # TEAM TOTALS (optional)
+    # TEAM TOTALS (optional) : works only if this market exists in this payload
     tt = collect_team_totals_lines(bookmakers)["lines"]
     ttk = pick_consensus_line(tt)
     if ttk and ttk in tt:
@@ -311,7 +299,7 @@ def build_team_candidates(
             if "Over" in sides and "Under" in sides:
                 add_two_way_team(out, g, injuries, team_features, f"TEAM TOTAL ({team_name})", ptf, "Over", "Under", sides["Over"], sides["Under"])
 
-    # 1H markets (optional in payload)
+    # 1H markets (optional)
     h2h1 = collect_market_lines(bookmakers, "h2h_h1")["lines"]
     lk1 = pick_consensus_line(h2h1)
     if lk1 and lk1 in h2h1:
@@ -370,7 +358,6 @@ def build_prop_candidates(
 
         alpha = _alpha_props(mpg) if p_over_model is not None else 0.0
 
-        # 1) market only -> p_mkt
         base = analyze_two_way_market(
             match=match,
             market_label=market_label,
@@ -388,14 +375,14 @@ def build_prop_candidates(
             continue
 
         pmkt_over = float(base[0]["fair_prob_raw"]) if base[0]["selection"] == "Over" else float(base[1]["fair_prob_raw"])
-        # model blend
+
         if alpha <= 0.0 or p_over_model is None:
             p_real_over = pmkt_over
         else:
             p_real_over = _clamp(alpha * float(p_over_model) + (1.0 - alpha) * pmkt_over)
+
         p_real_under = _clamp(1.0 - p_real_over)
 
-        # 2) final (with p_real)
         final = analyze_two_way_market(
             match=match,
             market_label=market_label,
@@ -421,14 +408,12 @@ def build_prop_candidates(
                 "p_mkt": float(it.get("fair_prob_raw", 0.0)),
                 "mpg": mpg,
             }
+
         out.extend(final)
 
     return out
 
 
-# -------------------------
-# MAIN
-# -------------------------
 def main():
     reset_state_if_new_day()
 
@@ -436,7 +421,6 @@ def main():
     remaining_team_slots = max(0, MAX_TEAM_PER_DAY - int(STATE.get("team_bets_sent", 0)))
     remaining_props_slots = max(0, MAX_PROPS_PER_DAY - int(STATE.get("prop_bets_sent", 0)))
 
-    # injuries best-effort
     try:
         injuries = fetch_injuries()
     except Exception:
@@ -444,23 +428,19 @@ def main():
 
     team_features, player_features = load_features()
 
-    # -------------------------
-    # FETCH TEAM ODDS
-    # -------------------------
+    # ✅ IMPORTANT: fetch ONLY base markets in one call (always stable)
     try:
         team_games, _meta = fetch_odds_with_fallback(
-            markets="h2h,spreads,totals,team_totals,h2h_h1,spreads_h1,totals_h1",
-            regions_priority=["fr", "eu", "uk", "us", "us2", "au"],
+            markets="h2h,spreads,totals",
+            regions_priority=["us"],
         )
-    except OddsApiError:
+    except OddsApiError as e:
         team_games = []
-
-    # IMPORTANT: if OddsAPI returns 0 games -> log and stop
-    if (team_games is None) or (len(team_games) == 0):
+        # log reason
         desc = format_no_bet(
             "NBA NO BET LOG",
-            "Aucun match reçu depuis OddsAPI (team_games vide). Vérifie ODDS_API_KEY / regions / quota.",
-            [],
+            f"OddsAPI erreur sur fetch base markets (h2h,spreads,totals): {str(e)[:200]}",
+            ["us"],
             0,
             0,
             [],
@@ -472,6 +452,41 @@ def main():
         save_state()
         return
 
+    if not team_games:
+        desc = format_no_bet(
+            "NBA NO BET LOG",
+            "Aucun match reçu depuis OddsAPI sur base markets (h2h,spreads,totals).",
+            ["us"],
+            0,
+            0,
+            [],
+            [],
+            DAILY_BUDGET,
+            float(STATE.get("daily_spent_eur", 0.0)),
+        )
+        post_discord(LOG_WEBHOOK, "NBA NO BET LOG", desc)
+        save_state()
+        return
+
+    # ✅ OPTIONAL: try extra markets ONE BY ONE, do not fail if 422
+    extra_markets = ["team_totals", "h2h_h1", "spreads_h1", "totals_h1"]
+    extras_by_id: Dict[str, Dict[str, Any]] = {}
+
+    for mk in extra_markets:
+        try:
+            gextra, _ = fetch_odds_with_fallback(markets=mk, regions_priority=["us"])
+            for ge in gextra or []:
+                extras_by_id[str(ge.get("id"))] = ge
+        except Exception:
+            continue
+
+    # Merge extras bookmakers into base games if available
+    for g in team_games:
+        gid = str(g.get("id"))
+        if gid in extras_by_id:
+            # prefer extra bookmakers for extra markets (they may include more markets)
+            g["bookmakers"] = extras_by_id[gid].get("bookmakers", g.get("bookmakers", []))
+
     # Build TEAM candidates
     team_candidates: List[Dict[str, Any]] = []
     games_analyzed = 0
@@ -482,7 +497,6 @@ def main():
         games_analyzed += 1
         team_candidates.extend(build_team_candidates(g, injuries, team_features))
 
-    # Filter EV>=0
     if EV_NONNEG_REQUIRED:
         team_candidates = [c for c in team_candidates if float(c.get("ev", -999.0)) >= 0.0]
 
@@ -493,9 +507,7 @@ def main():
         one_pick_per_match=ONE_PICK_PER_MATCH_TEAM,
     )
 
-    # -------------------------
-    # FETCH PROPS
-    # -------------------------
+    # PROPS (force us)
     prop_market_map = {
         "PROP PTS": "player_points",
         "PROP REB": "player_rebounds",
@@ -508,14 +520,11 @@ def main():
     if remaining_props_slots > 0:
         for label, key in prop_market_map.items():
             try:
-                games, _meta = fetch_odds_with_fallback(
-                    markets=key,
-                    regions_priority=["fr", "eu", "uk", "us", "us2", "au"],
-                )
-            except OddsApiError:
+                games, _ = fetch_odds_with_fallback(markets=key, regions_priority=["us"])
+            except Exception:
                 continue
 
-            for g in games:
+            for g in games or []:
                 if not is_game_soon(g.get("commence_time", "")):
                     continue
                 prop_candidates.extend(build_prop_candidates(g, injuries, player_features, label, key))
@@ -530,14 +539,11 @@ def main():
         one_pick_per_player=True,
     )
 
-    # -------------------------
-    # NO BET
-    # -------------------------
     if not team_top and not prop_top:
         desc = format_no_bet(
             "NBA NO BET LOG",
-            "EV>=0 introuvable sur TEAM + PROPS (avec p_real issu du modèle + blend marché).",
-            [],
+            "EV>=0 introuvable sur TEAM + PROPS.",
+            ["us"],
             games_analyzed,
             len(team_candidates) + len(prop_candidates),
             [],
@@ -549,9 +555,7 @@ def main():
         save_state()
         return
 
-    # -------------------------
-    # BUDGET SPLIT
-    # -------------------------
+    # Budget split 50/50
     if team_top and prop_top:
         team_budget = remaining_budget_total * 0.50
         props_budget = remaining_budget_total * 0.50
@@ -562,9 +566,7 @@ def main():
         team_budget = 0.0
         props_budget = remaining_budget_total
 
-    # -------------------------
     # SEND TEAM
-    # -------------------------
     if team_top and team_budget > 0:
         stakes = allocate_stakes_capped(team_budget, len(team_top), max_single_share=0.30)
         for pick, stake in zip(team_top, stakes):
@@ -576,9 +578,7 @@ def main():
             STATE["team_bets_sent"] = int(STATE.get("team_bets_sent", 0)) + 1
             STATE["team_spent_eur"] = float(STATE.get("team_spent_eur", 0.0)) + float(stake)
 
-    # -------------------------
     # SEND PROPS
-    # -------------------------
     if prop_top and props_budget > 0:
         stakes = allocate_stakes_capped(props_budget, len(prop_top), max_single_share=0.30)
         for pick, stake in zip(prop_top, stakes):

@@ -101,7 +101,7 @@ def reset_state_if_new_day():
         })
 
 
-def is_game_soon(commence_time: str, horizon_hours: int = 40) -> bool:
+def is_game_soon(commence_time: str, horizon_hours: int = 96) -> bool:
     try:
         start_dt = parser.isoparse(commence_time)
         if start_dt.tzinfo is None:
@@ -397,6 +397,22 @@ def main():
         )
     except OddsApiError:
         team_games = []
+
+        if not team_games:
+        desc = format_no_bet(
+            "NBA NO BET LOG",
+            "Aucun match reçu depuis OddsAPI (team_games vide). Vérifie ODDS_API_KEY / regions / quota.",
+            [],
+            0,
+            0,
+            [],
+            [],
+            DAILY_BUDGET,
+            float(STATE.get("daily_spent_eur", 0.0)),
+        )
+        post_discord(LOG_WEBHOOK, "NBA NO BET LOG", desc)
+        save_state()
+        return
 
     team_candidates: List[Dict[str, Any]] = []
     games_analyzed = 0

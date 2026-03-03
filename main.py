@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from context import post_discord
 from odds_api import fetch_odds_with_fallback
@@ -15,6 +15,42 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     if v is None or str(v).strip() == "":
         return default
     return v
+
+
+def _flatten_games(obj: Any) -> List[Dict[str, Any]]:
+    """
+    odds_api.fetch_odds_with_fallback can return:
+    - List[Dict] (ideal)
+    - List[List[Dict]] (one list per region)
+    - Dict with "data" holding list(s)
+    We convert everything to List[Dict].
+    """
+    out: List[Dict[str, Any]] = []
+
+    def rec(x: Any) -> None:
+        if x is None:
+            return
+        if isinstance(x, dict):
+            # if a wrapper dict
+            if "data" in x:
+                rec(x["data"])
+                return
+            # if it's a match dict (has home/away)
+            if "home_team" in x and "away_team" in x:
+                out.append(x)
+                return
+            # otherwise try to scan values
+            for v in x.values():
+                rec(v)
+            return
+        if isinstance(x, list):
+            for it in x:
+                rec(it)
+            return
+        # ignore other types
+
+    rec(obj)
+    return out
 
 
 def _discord_embed_top(title: str, picks: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -54,15 +90,15 @@ def main() -> None:
         print(payload["content"])
         return
 
-    # Fetch NBA slate (TEAM markets only: h2h/spreads/totals)
-    # IMPORTANT: fetch_odds_with_fallback signature is (markets, regions_priority)
-    games = fetch_odds_with_fallback(
+    raw_games = fetch_odds_with_fallback(
         markets=cfg.markets,
         regions_priority=cfg.regions_priority,
     )
 
+    games = _flatten_games(raw_games)
+
     if not games:
-        payload = {"content": "❌ Aucun match reçu depuis OddsAPI (team_games vide). Vérifie ODDS_API_KEY / régions / quota."}
+        payload = {"content": "❌ Aucun match reçu depuis OddsAPI (team_games vide après flatten). Vérifie ODDS_API_KEY / régions / quota."}
         post_discord(payload)
         print(payload["content"])
         return
@@ -76,7 +112,11 @@ def main() -> None:
     embeds = [
         {
             "title": "NBA BOT — META",
-            "description": f"Games: {meta.get('games')} | model_weight: {meta.get('model_weight')} | clip: {meta.get('clip_vs_market')} | maxML/day: {meta.get('max_ml_per_day')} | maxMLodds: {meta.get('max_odds_ml')}",
+            "description": (
+                f"Games(flat): {meta.get('games')} | model_weight: {meta.get('model_weight')} | "
+                f"clip: {meta.get('clip_vs_market')} | maxML/day: {meta.get('max_ml_per_day')} | "
+                f"maxMLodds: {meta.get('max_odds_ml')}"
+            ),
             "color": 3447003,
         },
         _discord_embed_top("NBA — TOP 3 TEAM (MODEL-FIRST, anti-ML longshots)", team_picks),

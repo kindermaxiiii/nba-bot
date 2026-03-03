@@ -1,3 +1,4 @@
+# engine.py
 import os
 import math
 from typing import Any, Dict, List, Optional, Tuple
@@ -208,12 +209,12 @@ def collect_team_totals_lines(bookmakers: List[Dict[str, Any]], market_key: str)
 
 
 # -------------------------
-# CONSENSUS LINE (FIX ML-ONLY ISSUE)
+# CONSENSUS LINE (BALANCED)
 # -------------------------
 
 def pick_consensus_line(lines_dict: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> Optional[str]:
     """
-    FIX: choose the line_key that is the most 'balanced' (both sides present).
+    Choose the line_key that is most 'balanced' (both sides present).
     Score by (min_count_across_outcomes, total_count).
     """
     if not lines_dict:
@@ -240,10 +241,10 @@ def pick_consensus_prop_line(player_lines: Dict[str, Dict[str, List[Dict[str, An
 
 
 # -------------------------
-# SCORING (RECALIBRATED)
+# SCORING (RECALIBRATED + BASE/PENALTY EXPOSED)
 # -------------------------
 
-def robust_score(
+def robust_score_parts(
     market_label: str,
     tier: str,
     edge: float,
@@ -253,12 +254,9 @@ def robust_score(
     haircut_applied: bool,
     edge_raw: float,
     odds: float,
-) -> float:
+) -> Tuple[float, float, float]:
     """
-    0-100 score that matches your expectation:
-    - rewards edge/dev/books/quality book
-    - penalizes ML, crazy odds, haircut, relaxed
-    Goal: good spreads/totals/props can reach 80+.
+    Returns (score_final, score_base, score_penalty) in 0-100 scale.
     """
     edge = max(0.0, float(edge))
     dev = max(0.0, float(dev))
@@ -270,7 +268,7 @@ def robust_score(
     # dev: 10% => 20 pts
     dev_pts = min(20.0, (dev / 0.10) * 20.0)
 
-    # books: 10+ books => 15 pts
+    # books: 10+ => 15 pts
     books_pts = min(15.0, max(0.0, (books_used - 2) / 8.0) * 15.0)
 
     # market preference
@@ -285,7 +283,7 @@ def robust_score(
     elif "TOTAL" in m:
         market_pts += 8.0
     elif "MONEYLINE" in m:
-        market_pts -= 5.0
+        market_pts -= 6.0
 
     if "1H" in m:
         market_pts += 4.0
@@ -296,17 +294,27 @@ def robust_score(
     # tier bonus/penalty
     tier_bonus = 15.0 if (tier == "STRICT") else -10.0
 
+    base = edge_pts + dev_pts + books_pts + market_pts + bq + tier_bonus
+
     # penalties
     pen = 0.0
     if haircut_applied:
-        pen += 5.0
-    if edge_raw > 0.10:
+        pen += 6.0
+    if float(edge_raw) > 0.10:
         pen += 15.0
-    if "MONEYLINE" in m and odds > 3.0:
-        pen += 15.0
+    if "MONEYLINE" in m and float(odds) > 3.0:
+        pen += 18.0
+    if float(odds) >= 8.0:
+        pen += 10.0  # very long prices generally unstable / market noise
 
-    score = edge_pts + dev_pts + books_pts + market_pts + bq + tier_bonus - pen
-    return float(max(0.0, min(100.0, score)))
+    score = base - pen
+    score = float(max(0.0, min(100.0, score)))
+    return score, float(max(0.0, min(100.0, base))), float(max(0.0, pen))
+
+
+def robust_score(*args, **kwargs) -> float:
+    s, _, _ = robust_score_parts(*args, **kwargs)
+    return s
 
 
 # -------------------------
@@ -324,7 +332,7 @@ def analyze_two_way_market(
     edge_threshold: float,
     dev_threshold: float,
     min_books: int,
-    prefer_fr: bool = False,  # ignored in US-only mode; kept for compatibility
+    prefer_fr: bool = False,  # kept for compatibility
     tier: str = "STRICT",
     return_all: bool = False,
 ) -> Any:
@@ -333,7 +341,6 @@ def analyze_two_way_market(
     def rej(k: str):
         rejects[k] = rejects.get(k, 0) + 1
 
-    # distinct books
     books_a = len({e.get("book") for e in entries_a if e.get("book")})
     books_b = len({e.get("book") for e in entries_b if e.get("book")})
     total_books = len({e.get("book") for e in (entries_a + entries_b) if e.get("book")})
@@ -354,7 +361,6 @@ def analyze_two_way_market(
 
     fair_a_raw, fair_b_raw = compute_no_vig_fair_probs(med_a, med_b)
 
-    # prefer tier1 book price if available, else best
     best_all_a = best_price(entries_a)
     best_all_b = best_price(entries_b)
     if not best_all_a or not best_all_b:
@@ -367,26 +373,18 @@ def analyze_two_way_market(
     chosen_a = best_t1_a if best_t1_a else best_all_a
     chosen_b = best_t1_b if best_t1_b else best_all_b
 
-    # raw edge vs implied(best)
     edge_a_raw = fair_a_raw - implied_prob(chosen_a.get("price"))
     edge_b_raw = fair_b_raw - implied_prob(chosen_b.get("price"))
 
-    # dev vs median
     dev_a = (float(chosen_a["price"]) - float(med_a)) / float(med_a) if med_a > 0 else 0.0
     dev_b = (float(chosen_b["price"]) - float(med_b)) / float(med_b) if med_b > 0 else 0.0
 
-    # median vig proxy (2-way)
     vig_median = (implied_prob(med_a) + implied_prob(med_b)) - 1.0
 
-    # odds dispersion
     odds_sd_a = stdev([e.get("price") for e in entries_a])
     odds_sd_b = stdev([e.get("price") for e in entries_b])
 
     def apply_haircut(fair_raw: float, edge_raw: float, best_odds: float) -> Tuple[float, float, bool, List[str]]:
-        """
-        Haircut if edge_raw > 6% => -30% on edge (=> edge_adj = 0.7 * edge_raw)
-        Flags if >10%, refuse if >15%
-        """
         flags: List[str] = []
         haircut = False
 
@@ -403,44 +401,16 @@ def analyze_two_way_market(
             edge_adj = edge_raw * 0.70
             flags.append("haircut -30%")
 
-        # fair_adj reconstructed around implied(best): p = imp(best) + edge_adj
         fair_adj = implied_prob(best_odds) + edge_adj
         fair_adj = max(0.0, min(1.0, fair_adj))
         return fair_adj, edge_adj, haircut, flags
 
     def build_item(outcome: str, chosen: Dict[str, Any], med: float, fair_raw: float, edge_raw: float, dev: float, odds_sd: float) -> Dict[str, Any]:
         fair_adj, edge_adj, haircut, flags = apply_haircut(fair_raw, edge_raw, float(chosen["price"]))
-
-        # if refused by haircut logic
-        if any("REFUSE" in f for f in flags):
-            passed = False
-            ev = fair_adj * float(chosen["price"]) - 1.0
-            item = {
-                "match": match, "market": market_label, "line": line,
-                "selection": outcome, "odds": float(chosen["price"]), "book": str(chosen.get("book", "Unknown")),
-                "median_odds": float(med), "books_used": int(min(books_a, books_b)), "total_books": int(total_books),
-                "fair_prob_raw": float(fair_raw), "fair_prob": float(fair_adj),
-                "edge_raw": float(edge_raw), "edge": float(edge_adj),
-                "dev": float(dev),
-                "ev": float(ev),
-                "vig_median": float(vig_median),
-                "odds_stdev": float(odds_sd),
-                "tier": tier,
-                "haircut_applied": bool(haircut),
-                "flags": flags,
-                "passed": False,
-            }
-            item["score"] = robust_score(
-                market_label, tier, item["edge"], item["dev"], item["books_used"], item["book"],
-                item["haircut_applied"], item["edge_raw"], item["odds"]
-            )
-            return item
-
-        # EV
         ev = fair_adj * float(chosen["price"]) - 1.0
 
-        # threshold pass
-        passed = (edge_adj >= edge_threshold) and (dev >= dev_threshold)
+        refused = any("REFUSE" in f for f in flags)
+        passed = (not refused) and (edge_adj >= edge_threshold) and (dev >= dev_threshold)
 
         item = {
             "match": match, "market": market_label, "line": line,
@@ -457,18 +427,21 @@ def analyze_two_way_market(
             "flags": flags,
             "passed": bool(passed),
         }
-        item["score"] = robust_score(
+
+        score, base, pen = robust_score_parts(
             market_label, tier, item["edge"], item["dev"], item["books_used"], item["book"],
             item["haircut_applied"], item["edge_raw"], item["odds"]
         )
+        item["score"] = score
+        item["score_base"] = base
+        item["score_penalty"] = pen
+
         return item
 
     a_item = build_item(outcome_a, chosen_a, float(med_a), fair_a_raw, edge_a_raw, dev_a, odds_sd_a)
     b_item = build_item(outcome_b, chosen_b, float(med_b), fair_b_raw, edge_b_raw, dev_b, odds_sd_b)
-
     all_items = [a_item, b_item]
 
-    # reject counters
     for it in all_items:
         if it["books_used"] < min_books:
             rej("books<th")
@@ -484,7 +457,6 @@ def analyze_two_way_market(
     return passed
 
 
-# Backward compat alias
 def analyze_market_two_way(*args, **kwargs):
     return analyze_two_way_market(*args, **kwargs)
 
@@ -503,7 +475,7 @@ def diversify_team_picks(
     used_matches = set()
     ml_count = 0
 
-    for p in sorted(picks, key=lambda x: (x.get("score", 0), x.get("edge", 0), x.get("dev", 0)), reverse=True):
+    for p in sorted(picks, key=lambda x: (x.get("score", 0), x.get("ev", 0), x.get("edge", 0)), reverse=True):
         if len(out) >= max_picks:
             break
         if one_pick_per_match and p.get("match") in used_matches:
@@ -529,7 +501,7 @@ def diversify_prop_picks(
     used_matches = set()
     used_players = set()
 
-    for p in sorted(picks, key=lambda x: (x.get("score", 0), x.get("edge", 0), x.get("dev", 0)), reverse=True):
+    for p in sorted(picks, key=lambda x: (x.get("score", 0), x.get("ev", 0), x.get("edge", 0)), reverse=True):
         if len(out) >= max_picks:
             break
 
@@ -572,11 +544,9 @@ def allocate_stakes_capped(total_budget: float, n: int, daily_budget: float, cap
     planned = [total_budget * s for s in splits[:n]]
     stakes = [round(x, 2) for x in planned]
 
-    # cap per pick (25% day budget)
     cap_abs = max(0.0, float(daily_budget) * float(cap_day_share))
     stakes = [min(s, cap_abs) for s in stakes]
 
-    # ensure sum <= total_budget (after cap can only go down)
     while sum(stakes) - total_budget > 0.001:
         i = max(range(len(stakes)), key=lambda k: stakes[k])
         stakes[i] = round(max(0.0, stakes[i] - 0.01), 2)

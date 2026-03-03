@@ -1,81 +1,11 @@
 {
   "date_utc": "2026-03-03",
-  "daily_spent_eur": 4.49,
-  "team_bets_sent": 3,
+  "daily_spent_eur": 0,
+  "team_bets_sent": 0,
   "prop_bets_sent": 0,
-  "team_spent_eur": 4.49,
+  "team_spent_eur": 0,
   "props_spent_eur": 0.0,
-  "last_regions_team": "fr",
+  "last_regions_team": "null",
   "last_regions_props": null,
-  "clv": {
-    "Brooklyn Nets @ Miami Heat|MONEYLINE||Brooklyn Nets|None": {
-      "created_ts": "2026-03-03T12:40:41.497723+00:00",
-      "snapshots": [
-        {
-          "tag": "T0",
-          "odds": 6.6,
-          "book": "Betclic (FR)",
-          "ts_utc": "2026-03-03T12:40:41.497723+00:00"
-        },
-        {
-          "tag": "T+30",
-          "odds": 6.6,
-          "book": "Betclic (FR)",
-          "ts_utc": "2026-03-03T13:37:12.939610+00:00"
-        },
-        {
-          "tag": "T+60",
-          "odds": 6.4,
-          "book": "Betclic (FR)",
-          "ts_utc": "2026-03-03T16:45:03.443409+00:00"
-        }
-      ]
-    },
-    "Washington Wizards @ Orlando Magic|MONEYLINE||Washington Wizards|None": {
-      "created_ts": "2026-03-03T12:40:41.931936+00:00",
-      "snapshots": [
-        {
-          "tag": "T0",
-          "odds": 8.25,
-          "book": "NetBet",
-          "ts_utc": "2026-03-03T12:40:41.931936+00:00"
-        },
-        {
-          "tag": "T+30",
-          "odds": 8.75,
-          "book": "Unibet (FR)",
-          "ts_utc": "2026-03-03T13:37:12.939610+00:00"
-        },
-        {
-          "tag": "T+60",
-          "odds": 9.0,
-          "book": "Betclic (FR)",
-          "ts_utc": "2026-03-03T16:45:03.443409+00:00"
-        }
-      ]
-    },
-    "Memphis Grizzlies @ Minnesota Timberwolves|MONEYLINE||Memphis Grizzlies|None": {
-      "created_ts": "2026-03-03T12:40:42.165591+00:00",
-      "snapshots": [
-        {
-          "tag": "T0",
-          "odds": 6.9,
-          "book": "Betclic (FR)",
-          "ts_utc": "2026-03-03T12:40:42.165591+00:00"
-        },
-        {
-          "tag": "T+30",
-          "odds": 6.9,
-          "book": "Betclic (FR)",
-          "ts_utc": "2026-03-03T13:37:12.939610+00:00"
-        },
-        {
-          "tag": "T+60",
-          "odds": 7.0,
-          "book": "Betclic (FR)",
-          "ts_utc": "2026-03-03T16:45:03.443409+00:00"
-        }
-      ]
-    }
-  }
+  "clv": {}
 }

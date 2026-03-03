@@ -2,25 +2,16 @@
 import os
 import json
 import urllib.request
-from typing import Any, Dict, Optional
 
 
-def _env(name: str, default: Optional[str] = None) -> Optional[str]:
-    v = os.getenv(name)
-    if v is None or str(v).strip() == "":
-        return default
-    return v
+def post_discord(payload: dict) -> None:
+    url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
-
-def post_discord(payload: Dict[str, Any], webhook_url: Optional[str] = None) -> bool:
-    """
-    Post a JSON payload to a Discord webhook.
-    Returns True if sent, False otherwise.
-    """
-    url = webhook_url or _env("DISCORD_WEBHOOK_URL")
     if not url:
-        print("[context] DISCORD_WEBHOOK_URL missing -> skip post")
-        return False
+        # On log explicitement dans les logs GitHub Actions
+        print("❌ DISCORD_WEBHOOK_URL manquant (Secret non défini ou non passé au workflow).")
+        print("Payload à envoyer:", json.dumps(payload, ensure_ascii=False)[:1000])
+        return
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -32,8 +23,11 @@ def post_discord(payload: Dict[str, Any], webhook_url: Optional[str] = None) -> 
 
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            _ = resp.read()
-        return True
+            status = resp.status
+            body = resp.read().decode("utf-8", errors="ignore")
+            print(f"✅ Discord webhook response: HTTP {status}")
+            if body:
+                print("Discord response body:", body[:1000])
     except Exception as e:
-        print(f"[context] Discord post failed: {e}")
-        return False
+        print("❌ Erreur en envoyant sur Discord:", repr(e))
+        print("Payload:", json.dumps(payload, ensure_ascii=False)[:1000])

@@ -1,27 +1,30 @@
-from __future__ import annotations
-
+# context.py
+import os
 import json
 import urllib.request
 from typing import Any, Dict, Optional
 
 
-def post_discord(webhook_url: str, username: str, content: str) -> bool:
-    """
-    Envoie un message sur Discord via webhook.
-    Retourne True si succès, False sinon.
-    """
-    if not webhook_url:
-        return False
+def _env(name: str, default: Optional[str] = None) -> Optional[str]:
+    v = os.getenv(name)
+    if v is None or str(v).strip() == "":
+        return default
+    return v
 
-    payload: Dict[str, Any] = {
-        "username": username,
-        "content": content,
-        "allowed_mentions": {"parse": []},
-    }
+
+def post_discord(payload: Dict[str, Any], webhook_url: Optional[str] = None) -> bool:
+    """
+    Post a JSON payload to a Discord webhook.
+    Returns True if sent, False otherwise.
+    """
+    url = webhook_url or _env("DISCORD_WEBHOOK_URL")
+    if not url:
+        print("[context] DISCORD_WEBHOOK_URL missing -> skip post")
+        return False
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        webhook_url,
+        url,
         data=data,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -29,7 +32,8 @@ def post_discord(webhook_url: str, username: str, content: str) -> bool:
 
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            # Discord webhooks renvoient souvent 204 No Content
-            return 200 <= resp.status < 300 or resp.status == 204
-    except Exception:
+            _ = resp.read()
+        return True
+    except Exception as e:
+        print(f"[context] Discord post failed: {e}")
         return False

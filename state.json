@@ -1,27 +1,11 @@
 {
-  "date_utc": "2026-03-02",
-  "daily_spent_eur": 25.0,
-  "team_bets_sent": 1,
+  "date_local": "2026-03-03",
+  "daily_spent_eur": 0.0,
+  "team_bets_sent": 0,
   "prop_bets_sent": 0,
-  "team_spent_eur": 25.0,
+  "team_spent_eur": 0.0,
   "props_spent_eur": 0.0,
-  "last_regions_team": "fr",
+  "last_regions_team": null,
   "last_regions_props": null,
-  "clv": {
-    "d0690994e39a": {
-      "created_ts": "2026-03-02T22:58:08.060436+00:00",
-      "match": "Denver Nuggets @ Utah Jazz",
-      "market": "MONEYLINE",
-      "selection": "Utah Jazz",
-      "line": null,
-      "snapshots": [
-        {
-          "tag": "T0",
-          "odds": 5.6,
-          "book": "Unibet (FR)",
-          "ts_utc": "2026-03-02T22:58:08.060436+00:00"
-        }
-      ]
-    }
-  }
+  "clv": {}
 }

@@ -1,36 +1,14 @@
-# engine.py
-import os
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
-# -------------------------
-# BOOK FILTERING / QUALITY
-# -------------------------
+FR_BOOK_KEYWORDS = [
+    "betclic", "winamax", "parions", "pmu", "unibet (fr)", "unibet fr",
+    "zebet", "bwin fr", "pokerstars", "vbet fr"
+]
 
-DEFAULT_EXCLUDE = ["mybookie", "lowvig"]
-EXCLUDE_BOOKS = [x.strip().lower() for x in os.environ.get("EXCLUDE_BOOKS", "").split(",") if x.strip()]
-EXCLUDE_BOOK_KEYWORDS = DEFAULT_EXCLUDE + EXCLUDE_BOOKS
-
-TIER1_US_BOOKS = {
-    "fanduel", "draftkings", "betmgm", "caesars", "pointsbet", "betrivers",
-    "bet365", "circa", "superbook", "barstool", "hard rock", "espn bet",
-}
-
-def _norm(s: str) -> str:
-    return (s or "").strip().lower()
-
-def is_excluded_book(book_title: str) -> bool:
-    t = _norm(book_title)
-    return any(k in t for k in EXCLUDE_BOOK_KEYWORDS)
-
-def book_quality_points(book_title: str) -> float:
-    t = _norm(book_title)
-    return 7.0 if any(k in t for k in TIER1_US_BOOKS) else 0.0
-
-
-# -------------------------
-# BASIC HELPERS
-# -------------------------
+def is_fr_book(book_title: str) -> bool:
+    t = (book_title or "").strip().lower()
+    return any(k in t for k in FR_BOOK_KEYWORDS)
 
 def safe_float(x) -> Optional[float]:
     try:
@@ -53,14 +31,6 @@ def median(values: List[Optional[float]]) -> Optional[float]:
         return float(vals[n // 2])
     return (float(vals[n // 2 - 1]) + float(vals[n // 2])) / 2.0
 
-def stdev(values: List[Optional[float]]) -> float:
-    vals = [float(v) for v in values if v is not None]
-    if len(vals) < 2:
-        return 0.0
-    m = sum(vals) / len(vals)
-    var = sum((x - m) ** 2 for x in vals) / (len(vals) - 1)
-    return math.sqrt(var)
-
 def compute_no_vig_fair_probs(med_a: float, med_b: float) -> Tuple[float, float]:
     pa = implied_prob(med_a)
     pb = implied_prob(med_b)
@@ -72,30 +42,39 @@ def compute_no_vig_fair_probs(med_a: float, med_b: float) -> Tuple[float, float]
 def best_price(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not entries:
         return None
-    return max(entries, key=lambda x: float(x.get("price") or 0.0))
+    return max(entries, key=lambda x: x.get("price", 0.0))
 
-def best_tier1_price(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    tier1 = [e for e in entries if book_quality_points(e.get("book", "")) >= 7.0]
-    return best_price(tier1) if tier1 else None
+def best_fr_price(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    frs = [e for e in entries if e.get("is_fr")]
+    return best_price(frs) if frs else None
 
-
-# -------------------------
-# LINE COLLECTORS
-# -------------------------
+def score_pick(edge: float, dev: float, books_used: int, market_label: str, is_ml: bool) -> float:
+    """
+    Score 0-100 (ranking only, no thresholds).
+    - edge dominates
+    - dev confirms mispricing vs consensus
+    - books_used adds robustness
+    - small props bonus
+    - ML gets a mild penalty (we prefer spread/total/1H if similar)
+    """
+    edge_pts = max(0.0, min(1.0, edge / 0.08)) * 60.0
+    dev_pts  = max(0.0, min(1.0, dev  / 0.15)) * 20.0
+    book_pts = max(0.0, min(1.0, (books_used - 2) / 8.0)) * 15.0
+    bonus = 5.0 if str(market_label).startswith("PROP") else 0.0
+    ml_penalty = 6.0 if is_ml else 0.0
+    return max(0.0, min(100.0, edge_pts + dev_pts + book_pts + bonus - ml_penalty))
 
 def collect_market_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> Dict[str, Any]:
     """
-    Returns:
-      {"market": market_key, "lines": {line_key: {outcome_key: [entry,...]}}}
-
-    entry = {"price": float, "book": str, "point": float|None}
+    Output:
+      {"market": market_key, "lines": {line_key: {outcome_key: [entry...]}}}
+    entry = {"price": float, "book": str, "is_fr": bool, "point": float|None}
     """
     lines: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
 
     for b in bookmakers or []:
         book = b.get("title", "UnknownBook")
-        if is_excluded_book(book):
-            continue
+        fr = is_fr_book(book)
 
         for m in b.get("markets", []) or []:
             if m.get("key") != market_key:
@@ -105,84 +84,49 @@ def collect_market_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> D
                 name = o.get("name")
                 price = safe_float(o.get("price"))
                 point = safe_float(o.get("point"))
+
                 if name is None or price is None:
                     continue
 
-                if market_key == "h2h":
+                if market_key in ("h2h", "h2h_h1"):
                     line_key = "h2h"
                     outcome_key = str(name)
-                elif market_key == "totals":
+                elif market_key in ("totals", "totals_h1"):
                     if point is None:
                         continue
                     line_key = f"{point}"
                     outcome_key = str(name)  # Over/Under
-                elif market_key == "spreads":
+                elif market_key in ("spreads", "spreads_h1"):
                     if point is None:
                         continue
-                    line_key = f"{abs(point)}"
+                    # KEEP SIGNED LINE to avoid collisions (+11.5 vs -11.5)
+                    line_key = f"{point}"
                     outcome_key = str(name)  # team
                 else:
+                    # unknown key: keep a stable bucket
                     line_key = f"{point}" if point is not None else "NA"
                     outcome_key = str(name)
 
                 lines.setdefault(line_key, {}).setdefault(outcome_key, []).append(
-                    {"price": price, "book": book, "point": point}
+                    {"price": float(price), "book": book, "is_fr": fr, "point": point}
                 )
 
     return {"market": market_key, "lines": lines}
 
-
-def collect_player_prop_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> Dict[str, Any]:
-    """
-    Build:
-      {"market": market_key, "props": {player: {line_key: {"Over":[...],"Under":[...]}}}}
-    """
-    props: Dict[str, Dict[str, Dict[str, List[Dict[str, Any]]]]] = {}
-
-    for b in bookmakers or []:
-        book = b.get("title", "UnknownBook")
-        if is_excluded_book(book):
-            continue
-
-        for m in b.get("markets", []) or []:
-            if m.get("key") != market_key:
-                continue
-
-            for o in m.get("outcomes", []) or []:
-                side = o.get("name")  # Over/Under
-                player = o.get("description") or o.get("participant") or o.get("player")
-                price = safe_float(o.get("price"))
-                point = safe_float(o.get("point"))
-
-                if side is None or player is None or price is None or point is None:
-                    continue
-                player = str(player).strip()
-                if not player:
-                    continue
-
-                line_key = f"{point}"
-                props.setdefault(player, {}).setdefault(line_key, {}).setdefault(str(side), []).append(
-                    {"price": price, "book": book, "point": point}
-                )
-
-    return {"market": market_key, "props": props}
-
-
 def collect_team_totals_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> Dict[str, Any]:
     """
-    Team totals outcomes often:
+    OddsAPI team_totals / team_totals_h1:
       name: Over/Under
-      description: team name
+      description: team
       point: line
-    Build:
+    Output:
       {"market": market_key, "teams": {team: {line_key: {"Over":[...],"Under":[...]}}}}
     """
     teams: Dict[str, Dict[str, Dict[str, List[Dict[str, Any]]]]] = {}
 
     for b in bookmakers or []:
         book = b.get("title", "UnknownBook")
-        if is_excluded_book(book):
-            continue
+        fr = is_fr_book(book)
 
         for m in b.get("markets", []) or []:
             if m.get("key") != market_key:
@@ -194,132 +138,75 @@ def collect_team_totals_lines(bookmakers: List[Dict[str, Any]], market_key: str)
                 price = safe_float(o.get("price"))
                 point = safe_float(o.get("point"))
 
-                if side is None or team is None or price is None or point is None:
+                if not side or not team or price is None or point is None:
                     continue
+
                 team = str(team).strip()
                 if not team:
                     continue
 
                 line_key = f"{point}"
                 teams.setdefault(team, {}).setdefault(line_key, {}).setdefault(str(side), []).append(
-                    {"price": price, "book": book, "point": point}
+                    {"price": float(price), "book": book, "is_fr": fr, "point": float(point)}
                 )
 
     return {"market": market_key, "teams": teams}
 
+def collect_player_prop_lines(bookmakers: List[Dict[str, Any]], market_key: str) -> Dict[str, Any]:
+    """
+    OddsAPI player props:
+      name: "Over"/"Under"
+      description: player name
+      point: line
+      price: odds
+    Output:
+      {"market": market_key, "props": {player: {line_key: {"Over":[...],"Under":[...]}}}}
+    """
+    props: Dict[str, Dict[str, Dict[str, List[Dict[str, Any]]]]] = {}
 
-# -------------------------
-# CONSENSUS LINE (BALANCED)
-# -------------------------
+    for b in bookmakers or []:
+        book = b.get("title", "UnknownBook")
+        fr = is_fr_book(book)
+
+        for m in b.get("markets", []) or []:
+            if m.get("key") != market_key:
+                continue
+
+            for o in m.get("outcomes", []) or []:
+                side = o.get("name")
+                player = o.get("description") or o.get("participant") or o.get("player")
+                price = safe_float(o.get("price"))
+                point = safe_float(o.get("point"))
+
+                if not side or not player or price is None or point is None:
+                    continue
+
+                player = str(player).strip()
+                if not player:
+                    continue
+
+                line_key = f"{point}"
+                props.setdefault(player, {}).setdefault(line_key, {}).setdefault(str(side), []).append(
+                    {"price": float(price), "book": book, "is_fr": fr, "point": float(point)}
+                )
+
+    return {"market": market_key, "props": props}
 
 def pick_consensus_line(lines_dict: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> Optional[str]:
     """
-    Choose the line_key that is most 'balanced' (both sides present).
-    Score by (min_count_across_outcomes, total_count).
+    Pick the line with the most total quotes.
     """
     if not lines_dict:
         return None
-
-    best_key = None
-    best_tuple = (-1, -1)
-
+    best_key, best_count = None, -1
     for lk, outcomes in lines_dict.items():
-        counts = [len(v) for v in outcomes.values()]
-        if len(counts) < 2:
-            continue
-        minc = min(counts)
-        tot = sum(counts)
-        if (minc, tot) > best_tuple:
-            best_tuple = (minc, tot)
-            best_key = lk
-
+        cnt = sum(len(v) for v in outcomes.values())
+        if cnt > best_count:
+            best_key, best_count = lk, cnt
     return best_key
-
 
 def pick_consensus_prop_line(player_lines: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> Optional[str]:
     return pick_consensus_line(player_lines)
-
-
-# -------------------------
-# SCORING (RECALIBRATED + BASE/PENALTY EXPOSED)
-# -------------------------
-
-def robust_score_parts(
-    market_label: str,
-    tier: str,
-    edge: float,
-    dev: float,
-    books_used: int,
-    chosen_book: str,
-    haircut_applied: bool,
-    edge_raw: float,
-    odds: float,
-) -> Tuple[float, float, float]:
-    """
-    Returns (score_final, score_base, score_penalty) in 0-100 scale.
-    """
-    edge = max(0.0, float(edge))
-    dev = max(0.0, float(dev))
-    books_used = int(books_used)
-
-    # edge: 5% => 55 pts
-    edge_pts = min(55.0, (edge / 0.05) * 55.0)
-
-    # dev: 10% => 20 pts
-    dev_pts = min(20.0, (dev / 0.10) * 20.0)
-
-    # books: 10+ => 15 pts
-    books_pts = min(15.0, max(0.0, (books_used - 2) / 8.0) * 15.0)
-
-    # market preference
-    m = (market_label or "").upper()
-    market_pts = 0.0
-    if "PROP" in m:
-        market_pts += 10.0
-    elif "TEAM TOTAL" in m:
-        market_pts += 9.0
-    elif "SPREAD" in m:
-        market_pts += 8.0
-    elif "TOTAL" in m:
-        market_pts += 8.0
-    elif "MONEYLINE" in m:
-        market_pts -= 6.0
-
-    if "1H" in m:
-        market_pts += 4.0
-
-    # book quality
-    bq = book_quality_points(chosen_book)
-
-    # tier bonus/penalty
-    tier_bonus = 15.0 if (tier == "STRICT") else -10.0
-
-    base = edge_pts + dev_pts + books_pts + market_pts + bq + tier_bonus
-
-    # penalties
-    pen = 0.0
-    if haircut_applied:
-        pen += 6.0
-    if float(edge_raw) > 0.10:
-        pen += 15.0
-    if "MONEYLINE" in m and float(odds) > 3.0:
-        pen += 18.0
-    if float(odds) >= 8.0:
-        pen += 10.0  # very long prices generally unstable / market noise
-
-    score = base - pen
-    score = float(max(0.0, min(100.0, score)))
-    return score, float(max(0.0, min(100.0, base))), float(max(0.0, pen))
-
-
-def robust_score(*args, **kwargs) -> float:
-    s, _, _ = robust_score_parts(*args, **kwargs)
-    return s
-
-
-# -------------------------
-# ANALYZE 2-WAY MARKET + HAIRCUT
-# -------------------------
 
 def analyze_two_way_market(
     match: str,
@@ -329,226 +216,69 @@ def analyze_two_way_market(
     outcome_b: str,
     entries_a: List[Dict[str, Any]],
     entries_b: List[Dict[str, Any]],
-    edge_threshold: float,
-    dev_threshold: float,
+    *,
     min_books: int,
-    prefer_fr: bool = False,  # kept for compatibility
-    tier: str = "STRICT",
-    return_all: bool = False,
-) -> Any:
-    rejects: Dict[str, int] = {}
-
-    def rej(k: str):
-        rejects[k] = rejects.get(k, 0) + 1
-
-    books_a = len({e.get("book") for e in entries_a if e.get("book")})
-    books_b = len({e.get("book") for e in entries_b if e.get("book")})
+    prefer_fr: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """
+    Returns a single best candidate for side A and side B (we will rank globally later),
+    but ONLY if the market is well-formed (2-way, min books, medians exist).
+    Candidate includes:
+      fair_prob (no-vig median), edge, dev, EV, score
+    """
     total_books = len({e.get("book") for e in (entries_a + entries_b) if e.get("book")})
-
     if total_books < min_books:
-        rej("books<th")
-        return {"passed": [], "all": [], "rejects": rejects} if return_all else []
-
-    if books_a < 1 or books_b < 1:
-        rej("missing_side")
-        return {"passed": [], "all": [], "rejects": rejects} if return_all else []
+        return None
 
     med_a = median([e.get("price") for e in entries_a])
     med_b = median([e.get("price") for e in entries_b])
     if med_a is None or med_b is None:
-        rej("median_missing")
-        return {"passed": [], "all": [], "rejects": rejects} if return_all else []
+        return None
 
-    fair_a_raw, fair_b_raw = compute_no_vig_fair_probs(med_a, med_b)
+    fair_a, fair_b = compute_no_vig_fair_probs(med_a, med_b)
 
     best_all_a = best_price(entries_a)
     best_all_b = best_price(entries_b)
-    if not best_all_a or not best_all_b:
-        rej("best_missing")
-        return {"passed": [], "all": [], "rejects": rejects} if return_all else []
+    if best_all_a is None or best_all_b is None:
+        return None
 
-    best_t1_a = best_tier1_price(entries_a)
-    best_t1_b = best_tier1_price(entries_b)
+    best_fr_a = best_fr_price(entries_a)
+    best_fr_b = best_fr_price(entries_b)
 
-    chosen_a = best_t1_a if best_t1_a else best_all_a
-    chosen_b = best_t1_b if best_t1_b else best_all_b
+    chosen_a = best_fr_a if (prefer_fr and best_fr_a) else best_all_a
+    chosen_b = best_fr_b if (prefer_fr and best_fr_b) else best_all_b
 
-    edge_a_raw = fair_a_raw - implied_prob(chosen_a.get("price"))
-    edge_b_raw = fair_b_raw - implied_prob(chosen_b.get("price"))
-
-    dev_a = (float(chosen_a["price"]) - float(med_a)) / float(med_a) if med_a > 0 else 0.0
-    dev_b = (float(chosen_b["price"]) - float(med_b)) / float(med_b) if med_b > 0 else 0.0
-
-    vig_median = (implied_prob(med_a) + implied_prob(med_b)) - 1.0
-
-    odds_sd_a = stdev([e.get("price") for e in entries_a])
-    odds_sd_b = stdev([e.get("price") for e in entries_b])
-
-    def apply_haircut(fair_raw: float, edge_raw: float, best_odds: float) -> Tuple[float, float, bool, List[str]]:
-        flags: List[str] = []
-        haircut = False
-
-        if edge_raw > 0.15:
-            flags.append("edge_raw>15% REFUSE")
-            return fair_raw, edge_raw, haircut, flags
-
-        if edge_raw > 0.10:
-            flags.append("edge_raw>10% (suspect)")
-
-        edge_adj = edge_raw
-        if edge_raw > 0.06:
-            haircut = True
-            edge_adj = edge_raw * 0.70
-            flags.append("haircut -30%")
-
-        fair_adj = implied_prob(best_odds) + edge_adj
-        fair_adj = max(0.0, min(1.0, fair_adj))
-        return fair_adj, edge_adj, haircut, flags
-
-    def build_item(outcome: str, chosen: Dict[str, Any], med: float, fair_raw: float, edge_raw: float, dev: float, odds_sd: float) -> Dict[str, Any]:
-        fair_adj, edge_adj, haircut, flags = apply_haircut(fair_raw, edge_raw, float(chosen["price"]))
-        ev = fair_adj * float(chosen["price"]) - 1.0
-
-        refused = any("REFUSE" in f for f in flags)
-        passed = (not refused) and (edge_adj >= edge_threshold) and (dev >= dev_threshold)
-
-        item = {
-            "match": match, "market": market_label, "line": line,
-            "selection": outcome, "odds": float(chosen["price"]), "book": str(chosen.get("book", "Unknown")),
-            "median_odds": float(med), "books_used": int(min(books_a, books_b)), "total_books": int(total_books),
-            "fair_prob_raw": float(fair_raw), "fair_prob": float(fair_adj),
-            "edge_raw": float(edge_raw), "edge": float(edge_adj),
+    def build(outcome: str, chosen: Dict[str, Any], fair_prob: float, med: float, best_fr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        odds = float(chosen["price"])
+        p_imp = implied_prob(odds)
+        edge = float(fair_prob) - float(p_imp)
+        dev = (odds - float(med)) / float(med) if med > 0 else 0.0
+        ev = float(fair_prob) * odds - 1.0
+        books_used = min(len({e.get("book") for e in entries_a}), len({e.get("book") for e in entries_b}))
+        is_ml = (market_label == "MONEYLINE" or market_label == "MONEYLINE 1H")
+        sc = score_pick(edge=edge, dev=dev, books_used=int(books_used), market_label=market_label, is_ml=is_ml)
+        return {
+            "match": match,
+            "market": market_label,
+            "line": line,
+            "selection": outcome,
+            "odds": odds,
+            "book": str(chosen.get("book", "Unknown")),
+            "best_is_fr": bool(chosen.get("is_fr")),
+            "fr_best": float(best_fr["price"]) if best_fr else None,
+            "fr_best_book": str(best_fr.get("book")) if best_fr else None,
+            "median_odds": float(med),
+            "total_books": int(total_books),
+            "books_used": int(books_used),
+            "fair_prob": float(fair_prob),
+            "edge": float(edge),
             "dev": float(dev),
             "ev": float(ev),
-            "vig_median": float(vig_median),
-            "odds_stdev": float(odds_sd),
-            "tier": tier,
-            "haircut_applied": bool(haircut),
-            "flags": flags,
-            "passed": bool(passed),
+            "score": float(sc),
         }
 
-        score, base, pen = robust_score_parts(
-            market_label, tier, item["edge"], item["dev"], item["books_used"], item["book"],
-            item["haircut_applied"], item["edge_raw"], item["odds"]
-        )
-        item["score"] = score
-        item["score_base"] = base
-        item["score_penalty"] = pen
-
-        return item
-
-    a_item = build_item(outcome_a, chosen_a, float(med_a), fair_a_raw, edge_a_raw, dev_a, odds_sd_a)
-    b_item = build_item(outcome_b, chosen_b, float(med_b), fair_b_raw, edge_b_raw, dev_b, odds_sd_b)
-    all_items = [a_item, b_item]
-
-    for it in all_items:
-        if it["books_used"] < min_books:
-            rej("books<th")
-        if it["edge"] < edge_threshold:
-            rej("edge<th")
-        if it["dev"] < dev_threshold:
-            rej("dev<th")
-
-    passed = [it for it in all_items if it.get("passed")]
-
-    if return_all:
-        return {"passed": passed, "all": all_items, "rejects": rejects}
-    return passed
-
-
-def analyze_market_two_way(*args, **kwargs):
-    return analyze_two_way_market(*args, **kwargs)
-
-
-# -------------------------
-# DIVERSIFICATION
-# -------------------------
-
-def diversify_team_picks(
-    picks: List[Dict[str, Any]],
-    max_picks: int,
-    max_ml: int = 2,
-    one_pick_per_match: bool = True,
-) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    used_matches = set()
-    ml_count = 0
-
-    for p in sorted(picks, key=lambda x: (x.get("score", 0), x.get("ev", 0), x.get("edge", 0)), reverse=True):
-        if len(out) >= max_picks:
-            break
-        if one_pick_per_match and p.get("match") in used_matches:
-            continue
-        if p.get("market") == "MONEYLINE" and ml_count >= max_ml:
-            continue
-
-        out.append(p)
-        used_matches.add(p.get("match"))
-        if p.get("market") == "MONEYLINE":
-            ml_count += 1
-
-    return out
-
-
-def diversify_prop_picks(
-    picks: List[Dict[str, Any]],
-    max_picks: int,
-    one_pick_per_match: bool = True,
-    one_pick_per_player: bool = True,
-) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    used_matches = set()
-    used_players = set()
-
-    for p in sorted(picks, key=lambda x: (x.get("score", 0), x.get("ev", 0), x.get("edge", 0)), reverse=True):
-        if len(out) >= max_picks:
-            break
-
-        if one_pick_per_match and p.get("match") in used_matches:
-            continue
-
-        player = p.get("player")
-        if one_pick_per_player and player:
-            if player in used_players:
-                continue
-
-        out.append(p)
-        used_matches.add(p.get("match"))
-        if player:
-            used_players.add(player)
-
-    return out
-
-
-# -------------------------
-# STAKES
-# -------------------------
-
-def allocate_stakes_capped(total_budget: float, n: int, daily_budget: float, cap_day_share: float = 0.25) -> List[float]:
-    """
-    Stable split 40/35/25 then:
-    - never exceed total_budget
-    - never exceed cap_day_share of DAILY budget per pick
-    """
-    if n <= 0 or total_budget <= 0:
-        return []
-
-    if n == 1:
-        splits = [1.0]
-    elif n == 2:
-        splits = [0.6, 0.4]
-    else:
-        splits = [0.4, 0.35, 0.25]
-
-    planned = [total_budget * s for s in splits[:n]]
-    stakes = [round(x, 2) for x in planned]
-
-    cap_abs = max(0.0, float(daily_budget) * float(cap_day_share))
-    stakes = [min(s, cap_abs) for s in stakes]
-
-    while sum(stakes) - total_budget > 0.001:
-        i = max(range(len(stakes)), key=lambda k: stakes[k])
-        stakes[i] = round(max(0.0, stakes[i] - 0.01), 2)
-
-    return stakes
+    # Return both sides as separate candidates (caller will add them)
+    return {
+        "A": build(outcome_a, chosen_a, fair_a, float(med_a), best_fr_a),
+        "B": build(outcome_b, chosen_b, fair_b, float(med_b), best_fr_b),
+    }

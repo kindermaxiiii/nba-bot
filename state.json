@@ -1,11 +1,8 @@
 {
-  "date_utc": "2026-03-03",
+  "date_utc": "",
   "daily_spent_eur": 0,
   "team_bets_sent": 0,
   "prop_bets_sent": 0,
   "team_spent_eur": 0,
-  "props_spent_eur": 0.0,
-  "last_regions_team": "us",
-  "last_regions_props": null,
-  "clv": {
-  {
+  "props_spent_eur": 0
+}

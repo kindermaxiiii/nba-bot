@@ -1,10 +1,20 @@
+# formatting.py
 from typing import Any, Dict, List, Optional
 
-def _pct(x: float) -> str:
-    return f"{x*100:.2f}%"
+
+def _pct(x: float, digits: int = 2) -> str:
+    try:
+        return f"{float(x)*100:.{digits}f}%"
+    except Exception:
+        return "n/a"
+
 
 def _fmt_money(x: float) -> str:
-    return f"{x:.2f}€"
+    try:
+        return f"{float(x):.2f}€"
+    except Exception:
+        return "n/a"
+
 
 def _maybe(v: Optional[float], fmt: str = "{:.2f}") -> str:
     if v is None:
@@ -14,10 +24,22 @@ def _maybe(v: Optional[float], fmt: str = "{:.2f}") -> str:
     except Exception:
         return "n/a"
 
-def _bar(x: float, width: int = 18) -> str:
-    x = max(0.0, min(100.0, float(x)))
-    filled = int(round((x / 100.0) * width))
+
+def _bar(value: float, vmin: float, vmax: float, width: int = 22) -> str:
+    """
+    Simple ASCII bar. value clamped in [vmin,vmax]
+    """
+    try:
+        v = float(value)
+    except Exception:
+        v = vmin
+    if vmax <= vmin:
+        vmax = vmin + 1e-9
+    v = max(vmin, min(vmax, v))
+    r = (v - vmin) / (vmax - vmin)
+    filled = int(round(r * width))
     return "█" * filled + "░" * (width - filled)
+
 
 def _clv_block(p: Dict[str, Any]) -> str:
     snaps = p.get("clv_snapshots") or []
@@ -29,17 +51,32 @@ def _clv_block(p: Dict[str, Any]) -> str:
         odds = s.get("odds")
         book = s.get("book", "")
         dt = s.get("ts_utc", "")
-        lines.append(f"• {tag}: {odds:.2f} ({book}) @ {dt}" if odds else f"• {tag}: n/a @ {dt}")
+        if odds is None:
+            lines.append(f"• {tag}: n/a @ {dt}")
+        else:
+            lines.append(f"• {tag}: {float(odds):.2f} ({book}) @ {dt}")
     return "\n\n📈 **CLV snapshots**\n" + "\n".join(lines)
 
+
 def _flags_block(p: Dict[str, Any]) -> str:
+    tier = str(p.get("tier", "STRICT"))
+    haircut = bool(p.get("haircut_applied", False))
     flags = p.get("flags") or []
-    tier = p.get("tier", "STRICT")
-    s = f"🧩 **FLAGS**\n• Tier: **{tier}**"
-    if flags:
-        for f in flags[:8]:
-            s += f"\n• {f}"
-    return s
+
+    out = []
+    if tier == "WATCHLIST":
+        out.append("🟠 WATCHLIST (below SAFE, stake ×0.30)")
+    else:
+        out.append(f"🟢 {tier}")
+
+    if haircut:
+        out.append("✂️ haircut -30%")
+
+    for f in flags:
+        out.append(f"⚠️ {f}")
+
+    return "\n".join(f"• {x}" for x in out) if out else "• (aucun)"
+
 
 def format_team_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_budget: float, spent_after: float) -> str:
     match = p.get("match", "")
@@ -49,53 +86,79 @@ def format_team_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_bud
     odds = float(p.get("odds", 0.0))
     book = p.get("book", "Unknown")
 
+    books_used = int(p.get("books_used", 0) or 0)
+    total_books = int(p.get("total_books", 0) or 0)
     median_odds = p.get("median_odds")
-    books_used = p.get("books_used")
-    total_books = p.get("total_books")
 
-    fair_raw = float(p.get("fair_prob_raw", p.get("fair_prob", 0.0)))
-    fair_adj = float(p.get("fair_prob", 0.0))
-    edge_raw = float(p.get("edge_raw", p.get("edge", 0.0)))
-    edge_adj = float(p.get("edge", 0.0))
-    dev = float(p.get("dev", 0.0))
-    ev = float(p.get("ev", fair_adj * odds - 1.0))
+    fair_raw = float(p.get("fair_prob_raw", p.get("fair_prob", 0.0)) or 0.0)
+    fair_adj = float(p.get("fair_prob", 0.0) or 0.0)
 
-    # dans format_team_pick et format_prop_pick:
-    score_adj = float(p.get("score", 0.0))
-    score_base = float(p.get("score_base", p.get("score_base", 0.0)))
+    edge_raw = float(p.get("edge_raw", p.get("edge", 0.0)) or 0.0)
+    edge_adj = float(p.get("edge", 0.0) or 0.0)
+    dev = float(p.get("dev", 0.0) or 0.0)
+    ev = float(p.get("ev", fair_adj * odds - 1.0) or 0.0)
+
+    score = float(p.get("score", 0.0) or 0.0)
+    score_base = float(p.get("score_base", 0.0) or 0.0)
+    score_pen = float(p.get("score_penalty", 0.0) or 0.0)
+
+    vig_median = p.get("vig_median")
+    odds_sd = p.get("odds_stdev")
 
     pct_bk = (stake / bankroll) if bankroll > 0 else 0.0
     pct_day = (stake / daily_budget) if daily_budget > 0 else 0.0
 
+    injury_note = p.get("injury_note")
+    minutes_note = p.get("minutes_note")
+
     ctx = []
-    if p.get("injury_note"):
-        ctx.append(f"• Injuries: {p['injury_note']}")
-    if p.get("minutes_note"):
-        ctx.append(f"• Minutes proj.: {p['minutes_note']}")
-    ctx_block = ("\n\n🧠 **CONTEXT**\n" + "\n".join(ctx)) if ctx else ""
+    if injury_note:
+        ctx.append(f"**Injuries:** {injury_note}")
+    if minutes_note:
+        ctx.append(f"**Minutes proj.:** {minutes_note}")
+
+    ctx_block = ("\n\n" + "\n".join(ctx)) if ctx else ""
+
+    line_part = f"\nLine: {line}" if line is not None else ""
+    clv = _clv_block(p)
+
+    value_metrics = (
+        "📊 **VALUE METRICS**\n"
+        f"• Books (median calc): {books_used} | Total books: {total_books} | Median odds: {_maybe(median_odds)}\n"
+        f"• p_fair: {_pct(fair_adj)} (raw {_pct(fair_raw)})\n"
+        f"• EV: {_pct(ev)}\n"
+        f"• Edge: {_pct(edge_adj)} (raw {_pct(edge_raw)})  {_bar(edge_adj, 0.0, 0.08)}\n"
+        f"• Dev vs median: {_pct(dev)}  {_bar(dev, 0.0, 0.15)}\n"
+        f"• Score: {score:.0f}/100  ({_bar(score, 0.0, 100.0, 18)}) | base={score_base:.0f} | pen={score_pen:.0f}\n"
+        + (f"• Median vig proxy: {_pct(vig_median)}\n" if vig_median is not None else "")
+        + (f"• Odds dispersion (stdev): {_maybe(odds_sd)}\n" if odds_sd is not None else "")
+    )
+
+    flags_block = "🧩 **FLAGS**\n" + _flags_block(p)
+
+    stake_block = (
+        "💰 **STAKE**\n"
+        f"• Stake: {pct_bk*100:.2f}% BK ({_fmt_money(stake)}) — {pct_day*100:.2f}% day budget\n"
+        f"• Day budget: {_fmt_money(daily_budget)} | Spent after: {_fmt_money(spent_after)}"
+    )
 
     return (
-        f"✅ **NBA TEAM BET**\n"
-        f"**Match:** {match}\n"
-        f"**Market:** {market}\n"
-        + (f"**Line:** {line}\n" if line is not None else "")
-        + f"**Pick:** **{selection}**\n"
-        f"**Best:** {odds:.2f} (**{book}**)\n\n"
-        f"📌 **VALUE METRICS**\n"
-        f"• Books (median calc): **{books_used}** | Total books: **{total_books}** | Median odds: **{_maybe(median_odds)}**\n"
-        f"• p_fair: **{_pct(fair_adj)}** (raw {_pct(fair_raw)})\n"
-        f"• EV: **{_pct(ev)}**\n"
-        f"• Edge: **{_pct(edge_adj)}** (raw {_pct(edge_raw)})\n"
-        f"• Dev vs median: **{_pct(dev)}**\n"
-        f"• Score: **{score_adj:.0f}/100** (base {score_base:.0f})\n"
-        f"{_flags_block(p)}\n\n"
-        f"💰 **STAKE**\n"
-        f"• Stake: **{pct_bk*100:.2f}% BK** ({_fmt_money(stake)}) — {pct_day*100:.2f}% day budget\n"
-        f"• Day budget: {_fmt_money(daily_budget)} | Spent after: {_fmt_money(spent_after)}"
+        "✅ **NBA TEAM BET**\n"
+        f"Match: {match}\n"
+        f"Market: {market}\n"
+        f"Pick: {selection}"
+        + (f"{line_part}\n" if line is not None else "\n")
+        + f"Best: {odds:.2f} ({book})\n\n"
+        + value_metrics
+        + "\n"
+        + flags_block
+        + "\n\n"
+        + stake_block
         + ctx_block
-        + _clv_block(p)
+        + clv
         + "\n\n_If odds moved a lot before clicking: skip._"
     )
+
 
 def format_prop_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_budget: float, spent_after: float) -> str:
     match = p.get("match", "")
@@ -106,48 +169,79 @@ def format_prop_pick(p: Dict[str, Any], stake: float, bankroll: float, daily_bud
     odds = float(p.get("odds", 0.0))
     book = p.get("book", "Unknown")
 
-    fair_raw = float(p.get("fair_prob_raw", p.get("fair_prob", 0.0)))
-    fair_adj = float(p.get("fair_prob", 0.0))
-    edge_raw = float(p.get("edge_raw", p.get("edge", 0.0)))
-    edge_adj = float(p.get("edge", 0.0))
-    dev = float(p.get("dev", 0.0))
-    ev = float(p.get("ev", fair_adj * odds - 1.0))
+    books_used = int(p.get("books_used", 0) or 0)
+    total_books = int(p.get("total_books", 0) or 0)
+    median_odds = p.get("median_odds")
 
-    score_rank = float(p.get("score_rank", p.get("score", 0.0)))
-    score_base = float(p.get("score_base", 0.0))
+    fair_raw = float(p.get("fair_prob_raw", p.get("fair_prob", 0.0)) or 0.0)
+    fair_adj = float(p.get("fair_prob", 0.0) or 0.0)
+
+    edge_raw = float(p.get("edge_raw", p.get("edge", 0.0)) or 0.0)
+    edge_adj = float(p.get("edge", 0.0) or 0.0)
+    dev = float(p.get("dev", 0.0) or 0.0)
+    ev = float(p.get("ev", fair_adj * odds - 1.0) or 0.0)
+
+    score = float(p.get("score", 0.0) or 0.0)
+    score_base = float(p.get("score_base", 0.0) or 0.0)
+    score_pen = float(p.get("score_penalty", 0.0) or 0.0)
+
+    vig_median = p.get("vig_median")
+    odds_sd = p.get("odds_stdev")
 
     pct_bk = (stake / bankroll) if bankroll > 0 else 0.0
     pct_day = (stake / daily_budget) if daily_budget > 0 else 0.0
 
-    sel = f"{player} — {side} {line}" if line is not None else f"{player} — {side}"
+    injury_note = p.get("injury_note")
+    minutes_note = p.get("minutes_note")
 
     ctx = []
-    if p.get("injury_note"):
-        ctx.append(f"• Injuries: {p['injury_note']}")
-    if p.get("minutes_note"):
-        ctx.append(f"• Minutes proj.: {p['minutes_note']}")
-    ctx_block = ("\n\n🧠 **CONTEXT**\n" + "\n".join(ctx)) if ctx else ""
+    if injury_note:
+        ctx.append(f"**Injuries:** {injury_note}")
+    if minutes_note:
+        ctx.append(f"**Minutes proj.:** {minutes_note}")
+
+    ctx_block = ("\n\n" + "\n".join(ctx)) if ctx else ""
+
+    clv = _clv_block(p)
+
+    sel = f"{player} — {side} {line}" if line is not None else f"{player} — {side}"
+
+    value_metrics = (
+        "📊 **VALUE METRICS**\n"
+        f"• Books (median calc): {books_used} | Total books: {total_books} | Median odds: {_maybe(median_odds)}\n"
+        f"• p_fair: {_pct(fair_adj)} (raw {_pct(fair_raw)})\n"
+        f"• EV: {_pct(ev)}\n"
+        f"• Edge: {_pct(edge_adj)} (raw {_pct(edge_raw)})  {_bar(edge_adj, 0.0, 0.08)}\n"
+        f"• Dev vs median: {_pct(dev)}  {_bar(dev, 0.0, 0.15)}\n"
+        f"• Score: {score:.0f}/100  ({_bar(score, 0.0, 100.0, 18)}) | base={score_base:.0f} | pen={score_pen:.0f}\n"
+        + (f"• Median vig proxy: {_pct(vig_median)}\n" if vig_median is not None else "")
+        + (f"• Odds dispersion (stdev): {_maybe(odds_sd)}\n" if odds_sd is not None else "")
+    )
+
+    flags_block = "🧩 **FLAGS**\n" + _flags_block(p)
+
+    stake_block = (
+        "💰 **STAKE**\n"
+        f"• Stake: {pct_bk*100:.2f}% BK ({_fmt_money(stake)}) — {pct_day*100:.2f}% day budget\n"
+        f"• Day budget: {_fmt_money(daily_budget)} | Spent after: {_fmt_money(spent_after)}"
+    )
 
     return (
-        f"✅ **NBA PLAYER PROP**\n"
-        f"**Match:** {match}\n"
-        f"**Market:** {market}\n"
-        f"**Pick:** **{sel}**\n"
-        f"**Best:** {odds:.2f} (**{book}**)\n\n"
-        f"📌 **VALUE METRICS**\n"
-        f"• p_fair: **{_pct(fair_adj)}** (raw {_pct(fair_raw)})\n"
-        f"• EV: **{_pct(ev)}**\n"
-        f"• Edge: **{_pct(edge_adj)}** (raw {_pct(edge_raw)})\n"
-        f"• Dev vs median: **{_pct(dev)}**\n"
-        f"• Score (rank slate): **{score_rank:.0f}/100**  {_bar(score_rank)}  | base={score_base:.0f}\n\n"
-        f"{_flags_block(p)}\n\n"
-        f"💰 **STAKE**\n"
-        f"• Stake: **{pct_bk*100:.2f}% BK** ({_fmt_money(stake)}) — {pct_day*100:.2f}% day budget\n"
-        f"• Day budget: {_fmt_money(daily_budget)} | Spent after: {_fmt_money(spent_after)}"
+        "✅ **NBA PLAYER PROP**\n"
+        f"Match: {match}\n"
+        f"Market: {market}\n"
+        f"Pick: {sel}\n"
+        f"Best: {odds:.2f} ({book})\n\n"
+        + value_metrics
+        + "\n"
+        + flags_block
+        + "\n\n"
+        + stake_block
         + ctx_block
-        + _clv_block(p)
-        + "\n\n_Props: 1 pick/player & 1 pick/match (as possible)._"
+        + clv
+        + "\n\n_Props: 1 pick par joueur & 1 pick par match (si possible)._"
     )
+
 
 def format_no_bet(
     title: str,
@@ -160,19 +254,24 @@ def format_no_bet(
     daily_budget: float,
     daily_spent: float,
 ) -> str:
-    rejects_block = "\n".join([f"• {x}" for x in top_rejects]) if top_rejects else "• (aucune donnée)"
-    near_block = "\n".join(near_miss_lines) if near_miss_lines else "Aucun near-miss."
     regions_txt = ", ".join([r for r in regions_used if r]) if regions_used else "n/a"
+    rejects_block = "\n".join([f"• {x}" for x in top_rejects]) if top_rejects else "• (aucune donnée)"
+    near_block = "\n".join(near_miss_lines) if near_miss_lines else "• Aucun near-miss."
+
+    spend_ratio = (daily_spent / daily_budget) if daily_budget > 0 else 0.0
+    spend_bar = _bar(spend_ratio, 0.0, 1.0, 18)
 
     return (
         f"❌ **{title}**\n"
         f"Reason: {reason}\n\n"
-        f"🧾 **RUN SUMMARY**\n"
+        "🧾 **RUN SUMMARY**\n"
         f"• Regions: {regions_txt}\n"
         f"• Games analyzed: {games_analyzed}\n"
         f"• Markets tested: {markets_tested}\n\n"
-        f"📦 **MAIN REJECTS**\n{rejects_block}\n\n"
-        f"🎯 **NEAR MISSES (TOP 5)**\n{near_block}\n\n"
-        f"💰 **BUDGET**\n"
-        f"Day budget: **{_fmt_money(daily_budget)}** | Spent: **{_fmt_money(daily_spent)}** ({(daily_spent/daily_budget*100 if daily_budget else 0):.2f}%)"
+        "📦 **MAIN REJECTS**\n"
+        f"{rejects_block}\n\n"
+        "🎯 **NEAR MISSES (TOP 5)**\n"
+        f"{near_block}\n\n"
+        "💰 **BUDGET**\n"
+        f"Day budget: {_fmt_money(daily_budget)} | Spent: {_fmt_money(daily_spent)} ({_pct(spend_ratio)}) {spend_bar}"
     )

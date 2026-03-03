@@ -390,6 +390,9 @@ def main():
     # -------------------------
     # FETCH TEAM ODDS (base markets)
     # -------------------------
+       # -------------------------
+    # FETCH TEAM ODDS (base markets)
+    # -------------------------
     try:
         team_games, _meta = fetch_odds_with_fallback(
             markets="h2h,spreads,totals,team_totals,h2h_h1,spreads_h1,totals_h1",
@@ -397,6 +400,23 @@ def main():
         )
     except OddsApiError:
         team_games = []
+
+    # IMPORTANT: si OddsAPI renvoie 0 match, on log et on stop
+    if not team_games:
+        desc = format_no_bet(
+            "NBA NO BET LOG",
+            "Aucun match reçu depuis OddsAPI (team_games vide). Vérifie ODDS_API_KEY / regions / quota.",
+            [],
+            0,
+            0,
+            [],
+            [],
+            DAILY_BUDGET,
+            float(STATE.get("daily_spent_eur", 0.0)),
+        )
+        post_discord(LOG_WEBHOOK, "NBA NO BET LOG", desc)
+        save_state()
+        return
 
         if not team_games:
         desc = format_no_bet(

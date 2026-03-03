@@ -224,20 +224,32 @@ def merge_rejects(dst: Dict[str, int], src: Dict[str, int]):
 def fetch_team_games_all_markets() -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     1) fetch base markets
-    2) try optional markets one by one (if plan supports them), merge bookmakers into same games by id
+    2) if FR returns too few books, force US fallback (more depth/dispersion)
+    3) try optional markets one by one (if plan supports them), merge bookmakers into same games by id
     """
     games, meta = fetch_odds_with_fallback(
         markets=TEAM_MARKETS_BASE,
         regions_priority=["fr", "us", "us2", "uk", "eu", "au"],
     )
 
+    # 🔥 Option encore plus puissante : si FR est "trop pauvre", on bascule en US automatiquement
+    # (heuristique: total bookmakers sur le slate < 15)
+    if (meta.get("chosen_region") == "fr"):
+        total_books = sum(len(g.get("bookmakers", []) or []) for g in games or [])
+        if total_books < 15:
+            games, meta = fetch_odds_with_fallback(
+                markets=TEAM_MARKETS_BASE,
+                regions_priority=["us", "us2", "uk", "eu", "au"],
+            )
+
     games_by_id: Dict[str, Dict[str, Any]] = {g.get("id"): g for g in games if g.get("id")}
 
     for mk in TEAM_MARKETS_OPTIONAL:
         try:
+            # IMPORTANT: on garde FR d'abord, mais si ça 422/poor, ton fetch_odds_with_fallback gère déjà l'échec
             g2, _meta2 = fetch_odds_with_fallback(
                 markets=mk,
-                regions_priority=["fr", "eu", "uk", "us", "us2", "au"],
+                regions_priority=["fr", "us", "us2", "uk", "eu", "au"],
             )
         except OddsApiError:
             continue
@@ -264,7 +276,6 @@ def fetch_team_games_all_markets() -> Tuple[List[Dict[str, Any]], Dict[str, Any]
                     base_books.append(b)
                     by_title[t] = b
                 else:
-                    # merge markets
                     bm = by_title[t].get("markets", []) or []
                     am = b.get("markets", []) or []
                     existing_keys = {m.get("key") for m in bm}

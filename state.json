@@ -1,9 +1,9 @@
 {
   "date_utc": "2026-03-03",
-  "daily_spent_eur": 6.25,
-  "team_bets_sent": 1,
+  "daily_spent_eur": 8.129999999999999,
+  "team_bets_sent": 2,
   "prop_bets_sent": 0,
-  "team_spent_eur": 6.25,
+  "team_spent_eur": 8.129999999999999,
   "props_spent_eur": 0.0,
   "last_regions_team": "us",
   "last_regions_props": null,
@@ -16,6 +16,18 @@
           "odds": 7.1,
           "book": "FanDuel",
           "ts_utc": "2026-03-03T18:15:48.833707+00:00"
+        },
+        {
+          "tag": "T+30",
+          "odds": 7.1,
+          "book": "FanDuel",
+          "ts_utc": "2026-03-03T19:28:09.325785+00:00"
+        },
+        {
+          "tag": "T0",
+          "odds": 7.1,
+          "book": "FanDuel",
+          "ts_utc": "2026-03-03T19:28:15.148975+00:00"
         }
       ]
     }

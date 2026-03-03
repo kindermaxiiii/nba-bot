@@ -1,9 +1,8 @@
 import os
 import json
 import requests
-import inspect
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple
 from dateutil import parser
 
 from odds_api import fetch_odds_with_fallback, OddsApiError
@@ -11,25 +10,18 @@ from engine import (
     collect_market_lines,
     collect_player_prop_lines,
     pick_consensus_line,
-    pick_consensus_prop_line,
     analyze_two_way_market,
     diversify_team_picks,
     diversify_prop_picks,
-    allocate_stakes_equal,
+    allocate_stakes_fixed_splits,
+    apply_stake_rules,
 )
 from formatting import format_team_pick, format_prop_pick, format_no_bet
-from context import fetch_injuries, build_injury_note, search_player_id, fetch_player_season_minutes
-
-# TON MODELE TEAM
-from model_team import model_prob_for_team_market
 
 
 TEAM_WEBHOOK = os.environ.get("DISCORD_TEAM_WEBHOOK")
 PROPS_WEBHOOK = os.environ.get("DISCORD_PROPS_WEBHOOK")
 LOG_WEBHOOK = os.environ.get("DISCORD_LOG_WEBHOOK")
-
-
-DATA_TEAM_FEATURES_PATH = os.path.join("data", "team_features.json")
 
 
 def post_discord(webhook: str, title: str, description: str):
@@ -38,31 +30,6 @@ def post_discord(webhook: str, title: str, description: str):
     data = {"embeds": [{"title": title, "description": description}]}
     r = requests.post(webhook, json=data, timeout=20)
     r.raise_for_status()
-
-
-def load_json_file(path: str, default: Any) -> Any:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default
-
-
-def save_json_file(path: str, obj: Any):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2, ensure_ascii=False)
-
-
-def reset_state_if_new_day(state: Dict[str, Any]):
-    today_utc = datetime.now(timezone.utc).date().isoformat()
-    if state.get("date_utc") != today_utc:
-        state.clear()
-        state.update({
-            "date_utc": today_utc,
-            "daily_spent_eur": 0.0,
-            "team_bets_sent": 0,
-            "prop_bets_sent": 0,
-        })
 
 
 def is_game_soon(commence_time: str, horizon_hours: int = 36) -> bool:
@@ -76,167 +43,160 @@ def is_game_soon(commence_time: str, horizon_hours: int = 36) -> bool:
         return False
 
 
-def safe_call_format_no_bet(**kwargs) -> str:
-    """
-    Compat si ton formatting.py a une signature différente.
-    """
+def main():
+    # -------------------------
+    # CONFIG
+    # -------------------------
+    with open("config.json", "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    bankroll = float(cfg.get("bankroll_eur", 100.0))
+    daily_budget_pct = float(cfg.get("daily_budget_pct", 0.10))
+    daily_budget = bankroll * daily_budget_pct
+
+    edge_th = float(cfg.get("edge_threshold", 0.015))
+    dev_th = float(cfg.get("dev_threshold", 0.02))
+    min_books = int(cfg.get("min_bookmakers", 2))
+
+    max_ml = int(cfg.get("max_ml_per_slate", 2))
+    one_pick_per_match = bool(cfg.get("one_pick_per_match", True))
+
+    # Stake rules (comme tu voulais figer)
+    cap_pct = float(cfg.get("cap_per_pick_pct", 0.30))      # 30% budget jour
+    fill_mult = float(cfg.get("fill_stake_multiplier", 0.30))  # FILL = 0.30x
+
+    # -------------------------
+    # TEAM FETCH (ONLY SUPPORTED)
+    # -------------------------
+    stats_matches = 0
+    stats_markets_tested = 0
+
     try:
-        sig = inspect.signature(format_no_bet)
-        accepted = {k: v for k, v in kwargs.items() if k in sig.parameters}
-        return format_no_bet(**accepted)
-    except Exception:
-        # fallback minimal
-        return f"NO BET\nReason: {kwargs.get('reason','n/a')}"
-
-
-def safe_call_format_team_pick(p: Dict[str, Any]) -> str:
-    try:
-        sig = inspect.signature(format_team_pick)
-        accepted = {k: v for k, v in {"p": p}.items() if k in sig.parameters}
-        return format_team_pick(**accepted)
-    except Exception:
-        return json.dumps(p, indent=2, ensure_ascii=False)
-
-
-def safe_call_format_prop_pick(p: Dict[str, Any]) -> str:
-    try:
-        sig = inspect.signature(format_prop_pick)
-        accepted = {k: v for k, v in {"p": p}.items() if k in sig.parameters}
-        return format_prop_pick(**accepted)
-    except Exception:
-        return json.dumps(p, indent=2, ensure_ascii=False)
-
-
-def build_team_features_map() -> Dict[str, Dict[str, Any]]:
-    features = load_json_file(DATA_TEAM_FEATURES_PATH, default={})
-    if isinstance(features, dict):
-        return features
-    return {}
-
-
-def analyze_team_game(
-    g: Dict[str, Any],
-    injuries: List[Dict[str, Any]],
-    team_features: Dict[str, Dict[str, Any]],
-    prefer_fr_books: bool,
-    min_books: int,
-    model_blend: float,
-    max_ml_per_day: int,
-) -> List[Dict[str, Any]]:
-    home = g["home_team"]
-    away = g["away_team"]
-    match = f"{away} @ {home}"
-    bookmakers = g.get("bookmakers", []) or []
-    if not bookmakers:
-        return []
-
-    out_candidates: List[Dict[str, Any]] = []
-
-    def run_two_way(market_label: str, line_val, a_key, b_key, a_entries, b_entries):
-        # model probs (TEAM only)
-        p_model_a = model_prob_for_team_market(
-            market=market_label,
-            selection=a_key,
-            line=line_val,
-            away_team=away,
-            home_team=home,
-            features=team_features,
+        team_games, meta = fetch_odds_with_fallback(
+            markets="h2h,spreads,totals",
+            regions_priority=["us", "us2", "uk", "eu", "au", "fr"],
         )
-        p_model_b = model_prob_for_team_market(
-            market=market_label,
-            selection=b_key,
-            line=line_val,
-            away_team=away,
-            home_team=home,
-            features=team_features,
+    except OddsApiError as e:
+        msg = format_no_bet(
+            reason=f"OddsAPI error: {str(e)}",
+            daily_budget=daily_budget,
+            matches_analyzed=0,
+            markets_tested=0,
         )
+        post_discord(LOG_WEBHOOK, "NBA NO BET LOG", msg)
+        return
 
-        res = analyze_two_way_market(
-            match=match,
-            market_label=market_label,
-            line=line_val,
-            outcome_a=a_key,
-            outcome_b=b_key,
-            entries_a=a_entries,
-            entries_b=b_entries,
-            min_books=min_books,
-            prefer_fr=prefer_fr_books,
-            return_all=True,
-            p_model_a=p_model_a,
-            p_model_b=p_model_b,
-            model_blend=model_blend,
+    if not team_games:
+        msg = format_no_bet(
+            reason="Aucun match reçu depuis OddsAPI (team_games vide). Vérifie ODDS_API_KEY / quota.",
+            daily_budget=daily_budget,
+            matches_analyzed=0,
+            markets_tested=0,
         )
+        post_discord(LOG_WEBHOOK, "NBA NO BET LOG", msg)
+        return
 
-        items = res.get("all", []) or []
-        for it in items:
-            it["injury_note"] = build_injury_note(match, injuries)
-        out_candidates.extend(items)
+    team_candidates: List[Dict[str, Any]] = []
 
-    # MONEYLINE
-    h2h = collect_market_lines(bookmakers, "h2h")["lines"]
-    lk = pick_consensus_line(h2h)
-    if lk and lk in h2h:
-        outs = list(h2h[lk].keys())
-        if len(outs) >= 2:
-            run_two_way("MONEYLINE", None, outs[0], outs[1], h2h[lk][outs[0]], h2h[lk][outs[1]])
+    for g in team_games:
+        if not is_game_soon(g.get("commence_time", "")):
+            continue
 
-    # TOTAL
-    totals = collect_market_lines(bookmakers, "totals")["lines"]
-    tlk = pick_consensus_line(totals)
-    if tlk and tlk in totals:
-        sides = totals[tlk]
-        if "Over" in sides and "Under" in sides:
-            run_two_way("TOTAL", float(tlk), "Over", "Under", sides["Over"], sides["Under"])
+        stats_matches += 1
+        match = f"{g['away_team']} @ {g['home_team']}"
+        bookmakers = g.get("bookmakers", []) or []
+        if not bookmakers:
+            continue
 
-    # SPREAD
-    spreads = collect_market_lines(bookmakers, "spreads")["lines"]
-    slk = pick_consensus_line(spreads)
-    if slk and slk in spreads:
-        teams = spreads[slk]
-        if home in teams and away in teams:
-            run_two_way("SPREAD", float(slk), home, away, teams[home], teams[away])
+        # MONEYLINE
+        h2h = collect_market_lines(bookmakers, "h2h")["lines"]
+        lk = pick_consensus_line(h2h)
+        if lk and lk in h2h:
+            outs = list(h2h[lk].keys())
+            if len(outs) >= 2:
+                out = analyze_two_way_market(
+                    match=match,
+                    market_label="MONEYLINE",
+                    line=None,
+                    outcome_a=outs[0],
+                    outcome_b=outs[1],
+                    entries_a=h2h[lk][outs[0]],
+                    entries_b=h2h[lk][outs[1]],
+                    edge_threshold=edge_th,
+                    dev_threshold=dev_th,
+                    min_books=min_books,
+                    prefer_fr=False,
+                    require_ev_nonneg=True,
+                )
+                stats_markets_tested += 1
+                team_candidates.extend(out["passed"])
 
-    # TEAM TOTALS (si dispo)
-    team_totals = collect_market_lines(bookmakers, "team_totals")["lines"]
-    ttk = pick_consensus_line(team_totals)
-    if ttk and ttk in team_totals:
-        try:
-            team_name, pt = ttk.split("|", 1)
-            ptf = float(pt)
-        except Exception:
-            team_name, ptf = None, None
-
-        if team_name and ptf is not None:
-            sides = team_totals[ttk]
+        # TOTAL
+        totals = collect_market_lines(bookmakers, "totals")["lines"]
+        tlk = pick_consensus_line(totals)
+        if tlk and tlk in totals:
+            sides = totals[tlk]
             if "Over" in sides and "Under" in sides:
-                run_two_way(f"TEAM TOTAL ({team_name})", ptf, "Over", "Under", sides["Over"], sides["Under"])
+                out = analyze_two_way_market(
+                    match=match,
+                    market_label="TOTAL",
+                    line=float(tlk),
+                    outcome_a="Over",
+                    outcome_b="Under",
+                    entries_a=sides["Over"],
+                    entries_b=sides["Under"],
+                    edge_threshold=edge_th,
+                    dev_threshold=dev_th,
+                    min_books=min_books,
+                    prefer_fr=False,
+                    require_ev_nonneg=True,
+                )
+                stats_markets_tested += 1
+                team_candidates.extend(out["passed"])
 
-    return out_candidates
+        # SPREAD
+        spreads = collect_market_lines(bookmakers, "spreads")["lines"]
+        slk = pick_consensus_line(spreads)
+        if slk and slk in spreads:
+            teams = spreads[slk]
+            home = g["home_team"]
+            away = g["away_team"]
+            if home in teams and away in teams:
+                out = analyze_two_way_market(
+                    match=match,
+                    market_label="SPREAD",
+                    line=float(slk),
+                    outcome_a=home,
+                    outcome_b=away,
+                    entries_a=teams[home],
+                    entries_b=teams[away],
+                    edge_threshold=edge_th,
+                    dev_threshold=dev_th,
+                    min_books=min_books,
+                    prefer_fr=False,
+                    require_ev_nonneg=True,
+                )
+                stats_markets_tested += 1
+                team_candidates.extend(out["passed"])
 
+    # Diversify and select top 3
+    team_picks = diversify_team_picks(team_candidates, max_picks=3, max_ml=max_ml, one_pick_per_match=one_pick_per_match)
 
-def analyze_props(
-    injuries: List[Dict[str, Any]],
-    prefer_fr_books: bool,
-    min_books: int,
-) -> List[Dict[str, Any]]:
-    # Props = marché no-vig uniquement (pour l’instant)
+    # -------------------------
+    # PROPS FETCH (BASE)
+    # -------------------------
     prop_market_map = {
         "PROP PTS": "player_points",
         "PROP REB": "player_rebounds",
         "PROP AST": "player_assists",
-        "PROP 3PT": "player_threes",
-        "PROP PRA": "player_points_rebounds_assists",
-        "PROP PR": "player_points_rebounds",
-        "PROP PA": "player_points_assists",
-        "PROP RA": "player_rebounds_assists",
     }
 
-    allc: List[Dict[str, Any]] = []
+    prop_candidates: List[Dict[str, Any]] = []
 
-    for label, market_key in prop_market_map.items():
+    for label, mk in prop_market_map.items():
         try:
             games, _ = fetch_odds_with_fallback(
-                markets=market_key,
+                markets=mk,
                 regions_priority=["us", "us2", "uk", "eu", "au", "fr"],
             )
         except OddsApiError:
@@ -251,18 +211,17 @@ def analyze_props(
             if not bookmakers:
                 continue
 
-            props_struct = collect_player_prop_lines(bookmakers, market_key)["props"]
+            props_struct = collect_player_prop_lines(bookmakers, mk)["props"]
 
             for player, player_lines in props_struct.items():
-                lk = pick_consensus_prop_line(player_lines)
+                lk = pick_consensus_line(player_lines)
                 if not lk or lk not in player_lines:
                     continue
-
                 sides = player_lines[lk]
                 if "Over" not in sides or "Under" not in sides:
                     continue
 
-                res = analyze_two_way_market(
+                out = analyze_two_way_market(
                     match=match,
                     market_label=label,
                     line=float(lk),
@@ -270,161 +229,74 @@ def analyze_props(
                     outcome_b="Under",
                     entries_a=sides["Over"],
                     entries_b=sides["Under"],
+                    edge_threshold=edge_th,
+                    dev_threshold=dev_th,
                     min_books=min_books,
-                    prefer_fr=prefer_fr_books,
-                    return_all=True,
-                    # pas de modèle props ici => p_real = p_mkt
-                    p_model_a=None,
-                    p_model_b=None,
-                    model_blend=0.0,
+                    prefer_fr=False,
+                    require_ev_nonneg=True,
                 )
 
-                items = res.get("all", []) or []
-                for it in items:
+                for it in out["passed"]:
                     it["player"] = player
-                    it["injury_note"] = build_injury_note(match, injuries)
+                prop_candidates.extend(out["passed"])
 
-                    pid = search_player_id(player)
-                    mpg = fetch_player_season_minutes(pid) if pid else None
-                    if mpg is not None:
-                        it["minutes_note"] = f"{mpg:.1f} min (saison)"
+    prop_picks = diversify_prop_picks(prop_candidates, max_picks=3, one_pick_per_match=True, one_pick_per_player=True)
 
-                allc.extend(items)
-
-    return allc
-
-
-def main():
-    config = load_json_file("config.json", default={})
-    state = load_json_file("state.json", default={})
-
-    reset_state_if_new_day(state)
-
-    bankroll = float(config.get("bankroll_eur", 100.0))
-    daily_budget = bankroll * float(config.get("daily_budget_pct", 0.10))
-
-    prefer_fr_books = bool(config.get("prefer_fr_books", True))
-    min_books = int(config.get("min_bookmakers", 2))
-
-    max_team = 3
-    max_props = 3
-    max_ml = 2  # ta règle
-    model_blend = float(config.get("model_blend", 0.65))  # modèle team vs marché
-
-    # Injuries best-effort
-    try:
-        injuries = fetch_injuries()
-    except Exception:
-        injuries = []
-
-    # Team features
-    team_features = build_team_features_map()
-
-    # Fetch TEAM odds
-    try:
-        team_games, meta = fetch_odds_with_fallback(
-            markets="h2h,spreads,totals",
-            regions_priority=["us", "us2", "uk", "eu", "au", "fr"],
-        )
-        chosen_region = meta.get("chosen_region", "n/a")
-    except OddsApiError as e:
-        desc = safe_call_format_no_bet(
-            title="❌ NBA NO BET LOG",
-            reason=f"OddsAPI error: {e}",
-            regions_used=["n/a"],
-            games_analyzed=0,
-            markets_tested=0,
-            top_rejects=[],
-            near_miss_lines=[],
-            daily_budget=daily_budget,
-            daily_spent=float(state.get("daily_spent_eur", 0.0)),
-        )
-        post_discord(LOG_WEBHOOK, "NBA NO BET LOG", desc)
-        save_json_file("state.json", state)
-        return
-
-    # Analyze team candidates
-    team_candidates: List[Dict[str, Any]] = []
-    games_analyzed = 0
-    for g in team_games:
-        if not is_game_soon(g.get("commence_time", "")):
-            continue
-        games_analyzed += 1
-        team_candidates.extend(
-            analyze_team_game(
-                g=g,
-                injuries=injuries,
-                team_features=team_features,
-                prefer_fr_books=prefer_fr_books,
-                min_books=min_books,
-                model_blend=model_blend,
-                max_ml_per_day=max_ml,
-            )
-        )
-
-    # Pick TOP TEAM (priorité EV>=0 ; si pas assez, on complète avec les "moins mauvais" EV)
-    team_pos = [x for x in team_candidates if x.get("ev", -999) >= 0.0]
-    team_neg = [x for x in team_candidates if x.get("ev", -999) < 0.0]
-    team_pos.sort(key=lambda x: (x.get("score", 0), x.get("ev", 0), x.get("dev", 0)), reverse=True)
-    team_neg.sort(key=lambda x: (x.get("score", 0), x.get("ev", 0), x.get("dev", 0)), reverse=True)
-    team_pool = team_pos + team_neg
-    team_picks = diversify_team_picks(team_pool, max_team, max_ml=max_ml, one_pick_per_match=True)
-
-    # Analyze props
-    prop_candidates = analyze_props(injuries, prefer_fr_books, min_books)
-
-    prop_pos = [x for x in prop_candidates if x.get("ev", -999) >= 0.0]
-    prop_neg = [x for x in prop_candidates if x.get("ev", -999) < 0.0]
-    prop_pos.sort(key=lambda x: (x.get("score", 0), x.get("ev", 0), x.get("dev", 0)), reverse=True)
-    prop_neg.sort(key=lambda x: (x.get("score", 0), x.get("ev", 0), x.get("dev", 0)), reverse=True)
-    prop_pool = prop_pos + prop_neg
-    prop_picks = diversify_prop_picks(prop_pool, max_props, one_pick_per_match=False, one_pick_per_player=True)
-
-    # NO BET if truly no candidates
+    # -------------------------
+    # NO BET
+    # -------------------------
     if not team_picks and not prop_picks:
-        desc = safe_call_format_no_bet(
-            title="❌ NBA NO BET LOG",
-            reason="Aucun candidat exploitable (games/markets vides ou min_books trop strict).",
-            regions_used=[chosen_region],
-            games_analyzed=games_analyzed,
-            markets_tested=len(team_candidates),
-            top_rejects=[],
-            near_miss_lines=[],
+        msg = format_no_bet(
+            reason=f"EV>=0 introuvable sur TEAM + PROPS (edge>={edge_th*100:.1f}% & dev>={dev_th*100:.1f}%).",
             daily_budget=daily_budget,
-            daily_spent=float(state.get("daily_spent_eur", 0.0)),
+            matches_analyzed=stats_matches,
+            markets_tested=stats_markets_tested,
         )
-        post_discord(LOG_WEBHOOK, "NBA NO BET LOG", desc)
-        save_json_file("state.json", state)
+        post_discord(LOG_WEBHOOK, "NBA NO BET LOG", msg)
         return
 
-    # Budget allocation simple (égal)
-    # Si tu veux enlever stakes affichés, ton formatting.py décidera.
-    remaining = max(0.0, daily_budget - float(state.get("daily_spent_eur", 0.0)))
-    total_picks = len(team_picks) + len(prop_picks)
-    stakes = allocate_stakes_equal(remaining, total_picks) if total_picks > 0 else []
-    i = 0
+    # -------------------------
+    # BUDGET SPLIT + STAKES
+    # -------------------------
+    spent = 0.0
+    # 60/40 par défaut si on a les deux
+    if team_picks and prop_picks:
+        team_budget = daily_budget * 0.60
+        prop_budget = daily_budget * 0.40
+    elif team_picks:
+        team_budget = daily_budget
+        prop_budget = 0.0
+    else:
+        team_budget = 0.0
+        prop_budget = daily_budget
 
-    # Send TEAM
-    for p in team_picks:
-        p["tier"] = "MODEL_BLEND" if model_blend > 0 else "MARKET_ONLY"
-        p["injury_note"] = p.get("injury_note") or ""
-        p["stake_eur"] = stakes[i] if i < len(stakes) else 0.0
-        i += 1
-        msg = safe_call_format_team_pick(p)
-        post_discord(TEAM_WEBHOOK, "🏀 NBA — TOP 3 TEAM (MODEL)", msg)
+    # TEAM SEND
+    if team_picks:
+        stakes = allocate_stakes_fixed_splits(team_budget, len(team_picks))
+        stakes = apply_stake_rules(stakes, daily_budget=daily_budget, cap_pct=cap_pct)
+        for pick, stake in zip(team_picks, stakes):
+            spent_after = spent + stake
+            msg = format_team_pick(
+                p=pick,
+                stake=stake,
+                daily_budget=daily_budget,
+                spent_after=spent_after,
+                max_ml=max_ml,
+                one_pick_per_match=one_pick_per_match,
+            )
+            post_discord(TEAM_WEBHOOK, "NBA TEAM BET", msg)
+            spent = spent_after
 
-    # Send PROPS
-    for p in prop_picks:
-        p["tier"] = "MARKET_ONLY"
-        p["injury_note"] = p.get("injury_note") or ""
-        p["stake_eur"] = stakes[i] if i < len(stakes) else 0.0
-        i += 1
-        msg = safe_call_format_prop_pick(p)
-        post_discord(PROPS_WEBHOOK, "🏀 NBA — TOP 3 PROPS", msg)
-
-    # Update state (spent)
-    state["daily_spent_eur"] = float(state.get("daily_spent_eur", 0.0)) + sum([p.get("stake_eur", 0.0) for p in (team_picks + prop_picks)])
-    save_json_file("state.json", state)
+    # PROPS SEND
+    if prop_picks:
+        stakes = allocate_stakes_fixed_splits(prop_budget, len(prop_picks))
+        stakes = apply_stake_rules(stakes, daily_budget=daily_budget, cap_pct=cap_pct)
+        for pick, stake in zip(prop_picks, stakes):
+            # (si tu veux un “fill” un jour, tu pourras multiplier par fill_mult sur les picks taggés RELAXED)
+            spent_after = spent + stake
+            msg = format_prop_pick(p=pick, stake=stake, daily_budget=daily_budget, spent_after=spent_after)
+            post_discord(PROPS_WEBHOOK, "NBA PLAYER PROPS", msg)
+            spent = spent_after
 
 
 if __name__ == "__main__":

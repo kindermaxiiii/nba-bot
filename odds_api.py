@@ -9,37 +9,29 @@ BASE_URL = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
 DEFAULT_ODDS_FORMAT = "decimal"
 DEFAULT_DATE_FORMAT = "iso"
 
+
 class OddsApiError(RuntimeError):
     pass
 
-def _request_json(url: str, params: Dict[str, Any], timeout: int, retries: int = 3) -> Tuple[int, Any, str, Dict[str, str]]:
+
+def _request_json(url: str, params: Dict[str, Any], timeout: int, retries: int = 2) -> Tuple[int, Any, str]:
     last_exc: Optional[Exception] = None
     for attempt in range(1, retries + 1):
         try:
             r = requests.get(url, params=params, timeout=timeout)
             txt = r.text or ""
-            headers = {k.lower(): v for k, v in (r.headers or {}).items()}
-
-            # Rate limit handling
-            if r.status_code == 429:
-                ra = headers.get("retry-after")
-                sleep_s = float(ra) if ra and ra.replace(".", "", 1).isdigit() else (0.8 * attempt)
-                time.sleep(sleep_s)
-                continue
-
-            if headers.get("content-type", "").startswith("application/json"):
+            if r.headers.get("content-type", "").startswith("application/json"):
                 try:
-                    return r.status_code, r.json(), txt, headers
+                    return r.status_code, r.json(), txt
                 except Exception:
-                    return r.status_code, None, txt, headers
-            return r.status_code, None, txt, headers
-
+                    return r.status_code, None, txt
+            return r.status_code, None, txt
         except Exception as e:
             last_exc = e
             if attempt < retries:
                 time.sleep(0.7 * attempt)
-
     raise OddsApiError(f"Request failed after {retries} retries: {last_exc}")
+
 
 def fetch_odds_with_fallback(
     markets: str,
@@ -47,14 +39,13 @@ def fetch_odds_with_fallback(
     odds_format: str = DEFAULT_ODDS_FORMAT,
     date_format: str = DEFAULT_DATE_FORMAT,
     timeout: int = 25,
-    retries: int = 3,
+    retries: int = 2,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if not ODDS_API_KEY:
         raise OddsApiError("ODDS_API_KEY missing (GitHub Secret).")
 
     tried: List[str] = []
     errors: List[str] = []
-    last_headers: Dict[str, str] = {}
 
     for region in regions_priority:
         tried.append(region)
@@ -66,9 +57,10 @@ def fetch_odds_with_fallback(
             "dateFormat": date_format,
         }
 
-        status, js, raw, headers = _request_json(BASE_URL, params=params, timeout=timeout, retries=retries)
-        last_headers = headers or last_headers
+        status, js, raw = _request_json(BASE_URL, params=params, timeout=timeout, retries=retries)
 
+        if status == 401 or "INVALID_KEY" in (raw or ""):
+            raise OddsApiError(f"INVALID_KEY: {raw[:200]}")
         if status == 422:
             errors.append(f"422 region={region} markets={markets}: {raw[:200]}")
             continue
@@ -82,9 +74,6 @@ def fetch_odds_with_fallback(
             "regions_tried": tried,
             "errors": errors,
             "markets": markets,
-            "rate_limit_remaining": headers.get("x-requests-remaining"),
-            "rate_limit_used": headers.get("x-requests-used"),
-            "rate_limit_reset": headers.get("x-requests-reset"),
         }
 
     raise OddsApiError(f"All regions failed. tried={tried} errors={errors[-3:]}")

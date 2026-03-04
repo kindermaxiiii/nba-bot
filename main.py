@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional, Tuple
+import traceback
+from typing import Any, Dict, List, Optional
 
 from context import post_discord_team, post_discord_props, post_discord_log
 from odds_api import fetch_odds_with_fallback
@@ -17,9 +18,45 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     return v
 
 
+def _flatten_games(obj: Any) -> List[Dict[str, Any]]:
+    """
+    odds_api.fetch_odds_with_fallback can return:
+    - List[Dict] (ideal)
+    - List[List[Dict]] (one list per region)
+    - Dict with "data" holding list(s)
+    We convert everything to List[Dict].
+    """
+    out: List[Dict[str, Any]] = []
+
+    def rec(x: Any) -> None:
+        if x is None:
+            return
+        if isinstance(x, dict):
+            if "data" in x:
+                rec(x["data"])
+                return
+            if "home_team" in x and "away_team" in x:
+                out.append(x)
+                return
+            for v in x.values():
+                rec(v)
+            return
+        if isinstance(x, list):
+            for it in x:
+                rec(it)
+            return
+
+    rec(obj)
+    return out
+
+
 def _discord_embed_top(title: str, picks: List[Dict[str, Any]], color: int = 3066993) -> Dict[str, Any]:
     if not picks:
-        return {"title": title, "description": "Aucun pick.", "color": 15158332}
+        return {
+            "title": title,
+            "description": "Aucun pick (EV>=0 introuvable après filtre modèle + discipline).",
+            "color": 15158332,
+        }
 
     lines: List[str] = []
     for i, p in enumerate(picks, 1):
@@ -33,6 +70,15 @@ def _discord_embed_top(title: str, picks: List[Dict[str, Any]], color: int = 306
         match = p.get("match") or "?"
         market = p.get("market") or "?"
         selection = p.get("selection") or "?"
+
+        p_model = p.get("p_model")
+        p_mkt = p.get("p_mkt")
+        p_real = p.get("fair_prob")  # fair_prob = p_real final
+
+        ev = p.get("ev")
+        edge = p.get("edge")
+        dev = p.get("dev")
+        score = p.get("score")
 
         def pct(x: Any) -> str:
             try:
@@ -50,71 +96,111 @@ def _discord_embed_top(title: str, picks: List[Dict[str, Any]], color: int = 306
             f"**#{i}** — {match}\n"
             f"Market: **{market}**{line_s}\n"
             f"Pick: **{selection}** @ **{odds_s}** ({book})\n"
-            f"p_model: {pct(p.get('p_model'))} | p_mkt: {pct(p.get('p_mkt'))} | p_real: {pct(p.get('fair_prob'))}\n"
-            f"EV: {pct(p.get('ev'))} | Edge: {pct(p.get('edge'))} | Dev: {pct(p.get('dev'))} | Score: {num(p.get('score'))}/100\n"
+            f"p_model: {pct(p_model)} | p_mkt: {pct(p_mkt)} | p_real: {pct(p_real)}\n"
+            f"EV: {pct(ev)} | Edge: {pct(edge)} | Dev: {pct(dev)} | Score: {num(score)}/100\n"
         )
 
     return {"title": title, "description": "\n".join(lines), "color": color}
 
 
+def _preview(raw_games: Any, n_chars: int = 900) -> str:
+    try:
+        s = json.dumps(raw_games, ensure_ascii=False)
+    except Exception:
+        s = repr(raw_games)
+    return s[:n_chars]
+
+
 def main() -> None:
+    # Always ping LOG at start (proves the workflow reached Python)
+    post_discord_log(content="NBA BOT: main.py started ✅")
+
     cfg = load_config("config.json")
 
-    # Secrets sanity
-    if not _env("ODDS_API_KEY"):
-        post_discord_log(content="❌ ODDS_API_KEY manquante (GitHub Secrets).")
+    # 1) Check Odds API key
+    api_key = _env("ODDS_API_KEY")
+    if not api_key:
+        msg = "❌ ODDS_API_KEY manquante dans les Secrets GitHub."
+        post_discord_log(content=msg)
+        # Also notify other channels so you see it even if LOG channel muted
+        post_discord_team(content=msg)
+        post_discord_props(content=msg)
+        print(msg)
         return
 
-    # Fetch odds
+    # 2) Fetch games
     try:
-        games, fetch_meta = fetch_odds_with_fallback(
+        raw_games = fetch_odds_with_fallback(
             markets=cfg.markets,
             regions_priority=cfg.regions_priority,
         )
     except Exception as e:
-        post_discord_log(content=f"❌ Erreur fetch OddsAPI: {repr(e)}")
+        msg = f"❌ Erreur fetch OddsAPI: {repr(e)}"
+        post_discord_log(content=msg + "\n" + traceback.format_exc()[:1500])
+        post_discord_team(content=msg)
+        post_discord_props(content=msg)
+        print(msg)
         return
+
+    games = _flatten_games(raw_games)
 
     if not games:
-        post_discord_log(content="❌ Aucun match reçu depuis OddsAPI (liste vide).")
+        msg = (
+            "❌ Aucun match reçu depuis OddsAPI (games vide après flatten).\n"
+            "Vérifie: ODDS_API_KEY / régions / quota / marchés.\n\n"
+            f"type(raw)={type(raw_games).__name__}\n"
+            f"preview(raw)={_preview(raw_games)}"
+        )
+        post_discord_log(content=msg)
+        post_discord_team(content="NBA — Aucun match reçu (voir channel LOG).")
+        post_discord_props(content="NBA — Aucun match reçu (voir channel LOG).")
+        print(msg)
         return
 
-    # Run engine
+    # 3) Run engine
     try:
         result = run_engine(games, cfg)
     except Exception as e:
-        post_discord_log(content=f"❌ Erreur run_engine: {repr(e)}")
+        msg = f"❌ Erreur run_engine: {repr(e)}"
+        post_discord_log(content=msg + "\n" + traceback.format_exc()[:1500])
+        post_discord_team(content=msg)
+        post_discord_props(content=msg)
+        print(msg)
         return
 
     team_picks = result.get("team_picks", []) or []
     prop_picks = result.get("prop_picks", []) or []
     meta = result.get("meta", {}) or {}
 
-    # META embed always to LOG
+    # 4) Always send META (LOG)
     meta_embed = {
         "title": "NBA BOT — META",
         "description": (
-            f"Games: {meta.get('games')} | markets_tested: {meta.get('markets_tested')} | "
-            f"regions_used: {fetch_meta.get('regions_used')} | markets(cfg): {cfg.markets} | "
-            f"odds_range: [{meta.get('min_odds')}, {meta.get('max_odds')}] | "
-            f"clip: {meta.get('clip_vs_market')} | model_w: {meta.get('model_weight')} | "
-            f"maxML/day: {meta.get('max_ml_per_day')}"
+            f"Games(flat): {meta.get('games')} | "
+            f"markets_tested: {meta.get('markets_tested')} | "
+            f"regions_used: {meta.get('regions_used', meta.get('regions_priority'))} | "
+            f"model_weight: {meta.get('model_weight')} | "
+            f"clip: {meta.get('clip_vs_market')} | "
+            f"maxML/day: {meta.get('max_ml_per_day')} | "
+            f"maxMLodds: {meta.get('max_odds_ml')}"
         ),
         "color": 3447003,
     }
     post_discord_log(content="", embeds=[meta_embed])
 
-    # TEAM
-    post_discord_team(content="", embeds=[_discord_embed_top("NBA — TOP 3 TEAM", team_picks, color=3066993)])
+    # 5) Always send TEAM channel message (even if empty)
+    team_embed = _discord_embed_top("NBA — TOP 3 TEAM", team_picks, color=3066993)
+    post_discord_team(content="", embeds=[team_embed])
 
-    # PROPS
-    if not prop_picks:
-        post_discord_props(content="", embeds=[{"title": "NBA — TOP 3 PROPS", "description": "Aucun pick (props non câblés / markets indisponibles).", "color": 15158332}])
-    else:
-        post_discord_props(content="", embeds=[_discord_embed_top("NBA — TOP 3 PROPS", prop_picks, color=10181046)])
+    # 6) Always send PROPS channel message (even if empty)
+    props_embed = _discord_embed_top("NBA — TOP 3 PROPS", prop_picks, color=10181046)
+    post_discord_props(content="", embeds=[props_embed])
 
-    # Actions log
-    print(json.dumps({"fetch_meta": fetch_meta, "meta": meta, "team_picks": team_picks, "prop_picks": prop_picks}, indent=2, ensure_ascii=False))
+    # 7) End ping (proves the run finished)
+    post_discord_log(content="NBA BOT: main.py finished ✅")
+
+    # Local print for Actions logs
+    print(json.dumps({"meta": meta, "team_picks": team_picks, "prop_picks": prop_picks}, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

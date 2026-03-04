@@ -1,151 +1,94 @@
-NBA Bot
-NBA Bot #124
-All jobs
-Run details
-run
-succeeded now in 21s
-Search logs
-1s
-Current runner version: '2.331.0'
-Runner Image Provisioner
-Operating System
-Runner Image
-GITHUB_TOKEN Permissions
-Secret source: Actions
-Prepare workflow directory
-Prepare all required actions
-Getting action download info
-Download action repository 'actions/checkout@v4' (SHA:34e114876b0b11c390a56381ad16ebd13914f8d5)
-Download action repository 'actions/setup-python@v5' (SHA:a26af69be951a213d495a4c3e4e4022e16d87065)
-Complete job name: run
-0s
-Run python - <<'PY'
-TEAM_OK=False HTTP_403
-PROPS_OK=False HTTP_403
-LOG_OK=False HTTP_403
-⚠️ Webhook pre-check not fully OK (continuing anyway).
-1s
-Run actions/checkout@v4
-Syncing repository: kindermaxiiii/nba-bot
-Getting Git version info
-Temporarily overriding HOME='/home/runner/work/_temp/1df2fef6-3877-448b-8984-d2b9b407e56e' before making global git config changes
-Adding repository directory to the temporary git global config as a safe directory
-/usr/bin/git config --global --add safe.directory /home/runner/work/nba-bot/nba-bot
-Deleting the contents of '/home/runner/work/nba-bot/nba-bot'
-Initializing the repository
-Disabling automatic garbage collection
-Setting up auth
-Fetching the repository
-Determining the checkout info
-/usr/bin/git sparse-checkout disable
-/usr/bin/git config --local --unset-all extensions.worktreeConfig
-Checking out the ref
-/usr/bin/git log -1 --format=%H
-a083c6993b99c2f53b1fd781a22cb95532d12b86
-0s
-Run actions/setup-python@v5
-Installed versions
-14s
-Run pip install -r requirements.txt
-Collecting requests==2.32.3 (from -r requirements.txt (line 1))
-  Downloading requests-2.32.3-py3-none-any.whl.metadata (4.6 kB)
-Collecting python-dateutil==2.9.0.post0 (from -r requirements.txt (line 2))
-  Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
-Collecting pandas==2.2.2 (from -r requirements.txt (line 3))
-  Downloading pandas-2.2.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (19 kB)
-Collecting numpy==1.26.4 (from -r requirements.txt (line 4))
-  Downloading numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (61 kB)
-Collecting scikit-learn==1.5.2 (from -r requirements.txt (line 5))
-  Downloading scikit_learn-1.5.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (13 kB)
-Collecting nba_api==1.6.1 (from -r requirements.txt (line 6))
-  Downloading nba_api-1.6.1-py3-none-any.whl.metadata (5.5 kB)
-Collecting charset-normalizer<4,>=2 (from requests==2.32.3->-r requirements.txt (line 1))
-  Downloading charset_normalizer-3.4.4-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (37 kB)
-Collecting idna<4,>=2.5 (from requests==2.32.3->-r requirements.txt (line 1))
-  Downloading idna-3.11-py3-none-any.whl.metadata (8.4 kB)
-Collecting urllib3<3,>=1.21.1 (from requests==2.32.3->-r requirements.txt (line 1))
-  Downloading urllib3-2.6.3-py3-none-any.whl.metadata (6.9 kB)
-Collecting certifi>=2017.4.17 (from requests==2.32.3->-r requirements.txt (line 1))
-  Downloading certifi-2026.2.25-py3-none-any.whl.metadata (2.5 kB)
-Collecting six>=1.5 (from python-dateutil==2.9.0.post0->-r requirements.txt (line 2))
-  Downloading six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)
-Collecting pytz>=2020.1 (from pandas==2.2.2->-r requirements.txt (line 3))
-  Downloading pytz-2026.1.post1-py2.py3-none-any.whl.metadata (22 kB)
-Collecting tzdata>=2022.7 (from pandas==2.2.2->-r requirements.txt (line 3))
-  Downloading tzdata-2025.3-py2.py3-none-any.whl.metadata (1.4 kB)
-Collecting scipy>=1.6.0 (from scikit-learn==1.5.2->-r requirements.txt (line 5))
-  Downloading scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (62 kB)
-Collecting joblib>=1.2.0 (from scikit-learn==1.5.2->-r requirements.txt (line 5))
-  Downloading joblib-1.5.3-py3-none-any.whl.metadata (5.5 kB)
-Collecting threadpoolctl>=3.1.0 (from scikit-learn==1.5.2->-r requirements.txt (line 5))
-  Downloading threadpoolctl-3.6.0-py3-none-any.whl.metadata (13 kB)
-Downloading requests-2.32.3-py3-none-any.whl (64 kB)
-Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
-Downloading pandas-2.2.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (13.0 MB)
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 13.0/13.0 MB 124.4 MB/s  0:00:00
-Downloading numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (18.3 MB)
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 18.3/18.3 MB 199.5 MB/s  0:00:00
-Downloading scikit_learn-1.5.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (13.3 MB)
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 13.3/13.3 MB 199.4 MB/s  0:00:00
-Downloading nba_api-1.6.1-py3-none-any.whl (279 kB)
-Downloading charset_normalizer-3.4.4-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (151 kB)
-Downloading idna-3.11-py3-none-any.whl (71 kB)
-Downloading urllib3-2.6.3-py3-none-any.whl (131 kB)
-Downloading certifi-2026.2.25-py3-none-any.whl (153 kB)
-Downloading joblib-1.5.3-py3-none-any.whl (309 kB)
-Downloading pytz-2026.1.post1-py2.py3-none-any.whl (510 kB)
-Downloading scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (35.3 MB)
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 35.3/35.3 MB 206.7 MB/s  0:00:00
-Downloading six-1.17.0-py2.py3-none-any.whl (11 kB)
-Downloading threadpoolctl-3.6.0-py3-none-any.whl (18 kB)
-Downloading tzdata-2025.3-py2.py3-none-any.whl (348 kB)
-Installing collected packages: pytz, urllib3, tzdata, threadpoolctl, six, numpy, joblib, idna, charset-normalizer, certifi, scipy, requests, python-dateutil, scikit-learn, pandas, nba_api
+name: NBA Bot
 
-Successfully installed certifi-2026.2.25 charset-normalizer-3.4.4 idna-3.11 joblib-1.5.3 nba_api-1.6.1 numpy-1.26.4 pandas-2.2.2 python-dateutil-2.9.0.post0 pytz-2026.1.post1 requests-2.32.3 scikit-learn-1.5.2 scipy-1.17.1 six-1.17.0 threadpoolctl-3.6.0 tzdata-2025.3 urllib3-2.6.3
-0s
-Run python - <<'PY'
-Debug post failed (continuing): HTTP 403
-0s
-Run if [ -f build_team_features.py ]; then
-  
-Fetching teams from balldontlie (NBA v1)...
-Saved 44 NBA teams.
-1s
-Run python main.py
-  
-❌ Erreur en envoyant sur Discord: <HTTPError 403: 'Forbidden'>
-Webhook (masked): https://discord.com/api/webhooks/1478683407671103759/8zOqMND...
-Payload: {"content": "NBA BOT: main.py started ✅"}
-❌ Erreur en envoyant sur Discord: <HTTPError 403: 'Forbidden'>
-Webhook (masked): https://discord.com/api/webhooks/1478683407671103759/8zOqMND...
-Payload: {"content": "❌ Aucun match reçu depuis OddsAPI (games vide après flatten).\nVérifie: ODDS_API_KEY / régions / quota / marchés.\n\ntype(raw)=tuple\npreview(raw)=[[{\"id\": \"5e27bbc527b9df8725ac9fcf03174b8c\", \"sport_key\": \"basketball_nba\", \"sport_title\": \"NBA\", \"commence_time\": \"2026-03-05T00:10:00Z\", \"home_team\": \"New York Knicks\", \"away_team\": \"Oklahoma City Thunder\", \"bookmakers\": [{\"key\": \"fanduel\", \"title\": \"FanDuel\", \"last_update\": \"2026-03-04T09:28:07Z\", \"markets\": [{\"key\": \"h2h\", \"last_update\": \"2026-03-04T09:28:07Z\", \"outcomes\": [{\"name\": \"New York Knicks\", \"price\": 2.54}, {\"name\": \"Oklahoma City Thunder\", \"price\": 1.54}]}, {\"key\": \"spreads\", \"last_update\": \"2026-03-04T09:28:07Z\", \"outcomes\": [{\"name\": \"New York Knicks\", \"price\": 1.91, \"point\": 4.5}, {\"name\": \"Oklahoma City Thunder\", \"price\": 1.91, \"point\": -4.5}]}, {\"key\": \"totals\", \"last_update\": \"2026-03-04T09:28:07Z\", \"outcomes\": 
-❌ Erreur en envoyant sur Discord: <HTTPError 403: 'Forbidden'>
-Webhook (masked): https://discord.com/api/webhooks/1478683574734422086/573tXl9...
-Payload: {"content": "NBA — Aucun match reçu (voir channel LOG)."}
-❌ Erreur en envoyant sur Discord: <HTTPError 403: 'Forbidden'>
-Webhook (masked): https://discord.com/api/webhooks/1477765897237037091/aP1VwjN...
-Payload: {"content": "NBA — Aucun match reçu (voir channel LOG)."}
-❌ Aucun match reçu depuis OddsAPI (games vide après flatten).
-Vérifie: ODDS_API_KEY / régions / quota / marchés.
+on:
+  schedule:
+    - cron: "30 16 * * *"
+    - cron: "30 21 * * *"
+  workflow_dispatch:
 
-type(raw)=tuple
-preview(raw)=[[{"id": "5e27bbc527b9df8725ac9fcf03174b8c", "sport_key": "basketball_nba", "sport_title": "NBA", "commence_time": "2026-03-05T00:10:00Z", "home_team": "New York Knicks", "away_team": "Oklahoma City Thunder", "bookmakers": [{"key": "fanduel", "title": "FanDuel", "last_update": "2026-03-04T09:28:07Z", "markets": [{"key": "h2h", "last_update": "2026-03-04T09:28:07Z", "outcomes": [{"name": "New York Knicks", "price": 2.54}, {"name": "Oklahoma City Thunder", "price": 1.54}]}, {"key": "spreads", "last_update": "2026-03-04T09:28:07Z", "outcomes": [{"name": "New York Knicks", "price": 1.91, "point": 4.5}, {"name": "Oklahoma City Thunder", "price": 1.91, "point": -4.5}]}, {"key": "totals", "last_update": "2026-03-04T09:28:07Z", "outcomes": [{"name": "Over", "price": 1.88, "point": 221.5}, {"name": "Under", "price": 1.94, "point": 221.5}]}]}, {"key": "draftkings", "title": "DraftKings", "last_upd
-0s
-Post job cleanup.
-1s
-Post job cleanup.
-/usr/bin/git version
-git version 2.53.0
-Temporarily overriding HOME='/home/runner/work/_temp/fe3c5268-a52a-4f62-b59d-15c9e0c0c65d' before making global git config changes
-Adding repository directory to the temporary git global config as a safe directory
-/usr/bin/git config --global --add safe.directory /home/runner/work/nba-bot/nba-bot
-/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
-/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
-/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
-http.https://github.com/.extraheader
-/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
-/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
-/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
-/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
-0s
-Cleaning up orphan processes
+permissions:
+  contents: read
+
+concurrency:
+  group: nba-bot-main
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Pre-check webhooks after checkout (still before main)
+      - name: Pre-check Discord webhooks (detailed, non-blocking)
+        env:
+          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
+          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
+          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
+        run: |
+          python - <<'PY'
+          import os, json, urllib.request, urllib.error
+
+          def normalize(v: str) -> str:
+              v = (v or "").strip()
+              if v.startswith("{"):
+                  try:
+                      v = json.loads(v).get("url","").strip()
+                  except Exception:
+                      pass
+              if v.startswith('"') and v.endswith('"'):
+                  v = v[1:-1]
+              return v.strip()
+
+          def post(url: str, content: str):
+              url = normalize(url)
+              if not url:
+                  return (False, "EMPTY_URL")
+              data = json.dumps({"content": content}).encode("utf-8")
+              req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"}, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      return (r.status in (200,204), f"HTTP_{r.status}")
+              except urllib.error.HTTPError as e:
+                  return (False, f"HTTP_{e.code}")
+              except Exception as e:
+                  return (False, f"ERR_{type(e).__name__}")
+
+          ok_team, st_team   = post(os.getenv("DISCORD_TEAM_WEBHOOK",""),  "NBA BOT DEBUG: TEAM webhook OK")
+          ok_props, st_props = post(os.getenv("DISCORD_PROPS_WEBHOOK",""), "NBA BOT DEBUG: PROPS webhook OK")
+          ok_log, st_log     = post(os.getenv("DISCORD_LOG_WEBHOOK",""),   "NBA BOT DEBUG: LOG webhook OK")
+
+          print(f"TEAM_OK={ok_team} {st_team}")
+          print(f"PROPS_OK={ok_props} {st_props}")
+          print(f"LOG_OK={ok_log} {st_log}")
+          PY
+
+      - name: Build team features (optional)
+        env:
+          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
+        run: |
+          if [ -f build_team_features.py ]; then
+            python build_team_features.py
+          else
+            echo "build_team_features.py not found - skipping"
+          fi
+
+      - name: Run bot
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
+          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
+          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
+          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
+        run: python main.py

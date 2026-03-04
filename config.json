@@ -1,18 +1,13 @@
+// config.json (V8) — replace your current file with this (adjust secrets are in GitHub, not here)
 {
-  "regions_priority": ["us"],
-  "team_markets": ["h2h", "spreads", "totals"],
+  "sport_key": "basketball_nba",
+  "slate_hours": 36,
 
-  "prop_markets": [
-    "player_points",
-    "player_rebounds",
-    "player_assists",
-    "player_points_rebounds_assists",
-    "player_points_assists",
-    "player_rebounds_assists"
-  ],
+  "regions_priority": ["us", "eu", "uk", "au"],
+  "team_markets": ["spreads", "h2h", "totals"],
 
-  "min_odds": 1.5,
-  "max_odds": 2.2,
+  "min_odds": 1.50,
+  "max_odds": 2.20,
 
   "clip_vs_market": 0.08,
   "haircut_trigger": 0.06,
@@ -21,11 +16,14 @@
   "min_edge": 0.02,
   "edge_refuse": 0.15,
 
-  "max_ml_per_day": 2,
   "one_pick_per_match": true,
-
   "max_picks_team": 3,
-  "max_picks_props": 3,
 
-  "slate_hours": 36
+  "bankroll": 1.0,
+  "bet_min_pct": 0.0025,
+  "bet_max_pct": 0.02,
+  "total_cap_pct": 0.10,
+
+  "prop_markets": ["player_points", "player_rebounds", "player_assists", "player_points_rebounds_assists"],
+  "max_picks_props": 3
 }

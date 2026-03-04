@@ -1,21 +1,22 @@
 {
   "regions_priority": ["us"],
-
-  "markets": [
-    "h2h",
-    "spreads",
-    "totals"
-  ],
+  "markets": ["spreads", "totals", "h2h"],
 
   "model_weight": 0.7,
   "clip_vs_market": 0.08,
 
-  "max_ml_per_day": 2,
-  "max_odds_ml": 2.4,
+  "min_odds": 1.5,
+  "max_odds": 2.2,
 
-  "min_edge": 0.015,
-  "min_ev": 0.01,
+  "min_edge": 0.02,
+  "min_ev": 0.0,
+
+  "max_ml_per_day": 1,
+  "max_odds_ml": 2.2,
 
   "max_picks_team": 3,
-  "max_picks_props": 3
+  "max_picks_props": 3,
+
+  "max_overround": 0.15,
+  "kelly_penalty_overround": 0.25
 }

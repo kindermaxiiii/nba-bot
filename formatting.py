@@ -1,55 +1,66 @@
-# formatting.py
+# formatting.py (V8)
+# Discord embeds with stake display
+
 from __future__ import annotations
+from typing import Any, Dict, List, Optional
 
-from typing import Any, Dict, List
 
-
-def _pct(x: Any) -> str:
+def _fmt_pct(x: float, digits: int = 2) -> str:
     try:
-        return f"{float(x)*100:.2f}%"
+        return f"{100.0 * float(x):.{digits}f}%"
     except Exception:
-        return "?"
-
-
-def _num(x: Any) -> str:
-    try:
-        return f"{float(x):.1f}"
-    except Exception:
-        return "?"
-
-
-def picks_embed(title: str, picks: List[Dict[str, Any]], color: int) -> Dict[str, Any]:
-    if not picks:
-        return {"title": title, "description": "Aucun pick.", "color": 15158332}
-
-    lines: List[str] = []
-    for i, p in enumerate(picks, 1):
-        line = p.get("line")
-        line_s = f" | Line: {line}" if line is not None else ""
-        lines.append(
-            f"**#{i}** — {p.get('match','?')}\n"
-            f"Market: **{p.get('market','?')}**{line_s}\n"
-            f"Pick: **{p.get('selection','?')}** @ **{float(p.get('odds',0)):.2f}** ({p.get('book','?')})\n"
-            f"p_model: {_pct(p.get('p_model'))} | p_mkt: {_pct(p.get('p_mkt'))} | p_real: {_pct(p.get('p_real'))}\n"
-            f"EV: {_pct(p.get('ev'))} | Edge: {_pct(p.get('edge'))} | Dev: {_pct(p.get('dev'))} | Score: {_num(p.get('score'))}/100\n"
-            f"Why: {p.get('why','')}\n"
-        )
-    return {"title": title, "description": "\n".join(lines)[:3900], "color": color}
-
-
-def meta_embed(meta: Dict[str, Any]) -> Dict[str, Any]:
-    desc = "\n".join([f"**{k}**: {v}" for k, v in meta.items()])[:3900]
-    return {"title": "NBA BOT — META", "description": desc, "color": 3447003}
-
-# Backward-compatible wrappers (used by main.py V7)
-
-def embed_picks(title: str, picks: List[Dict[str, Any]], color: int = 3066993) -> Dict[str, Any]:
-    return picks_embed(title, picks, color=color)
+        return "NA"
 
 
 def embed_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
-    return meta_embed(meta)
+    lines = []
+    for k in [
+        "run_id",
+        "ts_utc",
+        "sport_key",
+        "region_used",
+        "markets_used",
+        "games",
+        "team_candidates",
+        "team_picks",
+        "props_supported",
+        "props_picks",
+        "clip",
+        "clip_hits",
+        "clip_hit_rate",
+        "feature_coverage_pct",
+    ]:
+        if k in meta:
+            lines.append(f"{k}: {meta[k]}")
+    if "slate" in meta:
+        s = meta["slate"]
+        lines.append(f"slate: {{class: {s.get('class')}, injury_vol: {s.get('injury_vol')}, blowout_index: {s.get('blowout_index')}, kelly_mult: {s.get('kelly_mult')}, props_mult: {s.get('props_mult')}}}")
+    if meta.get("props_note"):
+        lines.append(f"props_note: {meta['props_note']}")
+
+    return {
+        "title": "NBA BOT — META",
+        "description": "```\n" + "\n".join(lines) + "\n```",
+        "color": 3447003,
+    }
 
 
-def embed_no_picks(title: str, reason: str, color: int = 15158332) -> Dict[str, Any]:
-    return {"title": title, "description": reason, "color": color}
+def embed_no_picks(title: str, reason: str) -> Dict[str, Any]:
+    return {"title": title, "description": reason, "color": 15158332}
+
+
+def embed_picks(title: str, picks: List[Dict[str, Any]], color: int = 3066993) -> Dict[str, Any]:
+    parts: List[str] = []
+    for i, p in enumerate(picks[:10], start=1):
+        parts.append(f"#{i} — {p.get('match')}")
+        parts.append(f"Market: {p.get('market')} | Line: {p.get('line')}")
+        parts.append(f"Pick: {p.get('side')} @ {p.get('odds')} ({p.get('book')})")
+        parts.append(f"p_model: {_fmt_pct(p.get('p_model', 0.0))} | p_mkt: {_fmt_pct(p.get('p_mkt', 0.0))} | p_real: {_fmt_pct(p.get('p_real', 0.0))}")
+        parts.append(f"EV: {_fmt_pct(p.get('ev', 0.0))} | Edge: {_fmt_pct(p.get('edge', 0.0))} | Dev: {_fmt_pct(p.get('dev', 0.0))} | Score: {float(p.get('score', 0.0)):.1f}/100")
+        if "stake_pct" in p:
+            parts.append(f"Stake: {_fmt_pct(p.get('stake_pct', 0.0), 2)} BR | Kelly_raw: {_fmt_pct(p.get('kelly_raw', 0.0), 2)}")
+        if p.get("why"):
+            parts.append(f"Why: {p.get('why')}")
+        parts.append("")
+
+    return {"title": title, "description": "\n".join(parts).strip(), "color": color}

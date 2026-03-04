@@ -1,22 +1,10 @@
 {
-  "regions_priority": ["us"],
-  "markets": ["spreads", "totals", "h2h"],
-
+  "sport_key": "basketball_nba",
+  "regions_priority": ["us", "eu", "uk", "au"],
+  "markets": ["h2h", "spreads", "totals"],
+  "preferred_books": ["fanduel", "draftkings", "betmgm", "caesars", "bovada"],
   "model_weight": 0.7,
   "clip_vs_market": 0.08,
-
-  "min_odds": 1.5,
-  "max_odds": 2.2,
-
-  "min_edge": 0.02,
-  "min_ev": 0.0,
-
-  "max_ml_per_day": 1,
-  "max_odds_ml": 2.2,
-
-  "max_picks_team": 3,
-  "max_picks_props": 3,
-
-  "max_overround": 0.15,
-  "kelly_penalty_overround": 0.25
+  "max_ml_per_day": 2,
+  "max_odds_ml": 2.2
 }

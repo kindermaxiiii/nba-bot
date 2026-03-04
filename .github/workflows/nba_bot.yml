@@ -1,22 +1,19 @@
-name: NBA Bot
+name: NBA Bot (TEST DISCORD)
 
 on:
-  schedule:
-    - cron: "30 16 * * *"
-    - cron: "30 21 * * *"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: nba-bot-main
+  group: nba-bot-test
   cancel-in-progress: false
 
 jobs:
-  run:
+  test_discord:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
 
     steps:
       - name: Checkout
@@ -30,16 +27,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Build team features (optional but recommended)
+      - name: TEST Discord LOG webhook (should post "TEST DISCORD OK")
         env:
-          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
-        run: python build_team_features.py
-
-      - name: Run bot
-        env:
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
-          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
-          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
-        run: python main.py
+        run: python -c "from context import post_discord_log; post_discord_log('TEST DISCORD OK')"
+
+      - name: TEST Discord TEAM webhook (should post "TEST TEAM OK")
+        env:
+          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
+        run: python -c "from context import post_discord_team; post_discord_team('TEST TEAM OK')"
+
+      - name: TEST Discord PROPS webhook (should post "TEST PROPS OK")
+        env:
+          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
+        run: python -c "from context import post_discord_props; post_discord_props('TEST PROPS OK')"

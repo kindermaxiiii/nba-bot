@@ -1,46 +1,122 @@
-import math
-from typing import Dict, Any, Optional
+# model_props.py
+from __future__ import annotations
 
-def _clamp(p: float, lo: float = 0.01, hi: float = 0.99) -> float:
-    return max(lo, min(hi, p))
+import re
+from typing import Any, Dict, Optional, Tuple
 
-def _phi(z: float) -> float:
-    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+from nba_api.stats.static import players
+from nba_api.stats.endpoints import playergamelog
 
-def over_prob(line: float, mean: float, sd: float) -> float:
-    if sd <= 1e-6:
-        return 0.5
-    z = (float(mean) - float(line)) / float(sd)
-    return _clamp(_phi(z))
 
-def model_prob_over(
-    market_label: str,
-    player_features: Dict[str, Any],
-    minutes_proj: Optional[float],
-    line: float
-) -> Optional[float]:
-    if not player_features or minutes_proj is None:
+def _clean_name(name: str) -> str:
+    s = (name or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    s = s.replace(".", "")
+    s = re.sub(r"\b(JR|SR|II|III|IV|V)\b\.?", "", s, flags=re.IGNORECASE).strip()
+    return s
+
+
+_PLAYER_ID_CACHE: Dict[str, Optional[int]] = {}
+_LOG_CACHE: Dict[Tuple[int, str], Optional[Any]] = {}  # (player_id, season) -> dataframe
+
+
+def find_player_id(full_name: str) -> Optional[int]:
+    key = _clean_name(full_name).lower()
+    if key in _PLAYER_ID_CACHE:
+        return _PLAYER_ID_CACHE[key]
+
+    cand = players.find_players_by_full_name(_clean_name(full_name))
+    if cand:
+        pid = cand[0]["id"]
+        _PLAYER_ID_CACHE[key] = pid
+        return pid
+
+    # fallback: try last name search
+    parts = _clean_name(full_name).split(" ")
+    if parts:
+        last = parts[-1]
+        cand2 = players.find_players_by_full_name(last)
+        if cand2:
+            pid = cand2[0]["id"]
+            _PLAYER_ID_CACHE[key] = pid
+            return pid
+
+    _PLAYER_ID_CACHE[key] = None
+    return None
+
+
+def _season_string(year: int, month: int) -> str:
+    # NBA season label like "2025-26"
+    if month >= 10:
+        y1 = year
+        y2 = year + 1
+    else:
+        y1 = year - 1
+        y2 = year
+    return f"{y1}-{str(y2)[-2:]}"
+
+
+def get_player_gamelog(player_id: int, season: str):
+    k = (player_id, season)
+    if k in _LOG_CACHE:
+        return _LOG_CACHE[k]
+    try:
+        df = playergamelog.PlayerGameLog(player_id=player_id, season=season).get_data_frames()[0]
+        _LOG_CACHE[k] = df
+        return df
+    except Exception:
+        _LOG_CACHE[k] = None
         return None
 
-    rates = player_features.get("rates") or {}
-    sds = player_features.get("sd") or {}
 
-    def ms(rate_key: str, sd_key: str, base_sd: float):
-        r = rates.get(rate_key)
-        if r is None: return None
-        mean = float(r) * float(minutes_proj)
-        sdpm = sds.get(sd_key)
-        sd = float(sdpm) * math.sqrt(max(1.0, float(minutes_proj))) if sdpm is not None else base_sd
-        return mean, sd
+def prob_over_from_logs(
+    player_name: str,
+    stat: str,
+    line: float,
+    season: str,
+    last_n: int = 20,
+    min_games: int = 8,
+) -> Optional[Dict[str, Any]]:
+    """
+    stat:
+      - "PTS", "REB", "AST", "PRA"
+    Returns dict with p_over and metadata.
+    """
+    pid = find_player_id(player_name)
+    if not pid:
+        return None
 
-    if market_label == "PROP PTS": pair = ms("pts_per_min", "pts_sd_per_min", 6.5)
-    elif market_label == "PROP REB": pair = ms("reb_per_min", "reb_sd_per_min", 3.5)
-    elif market_label == "PROP AST": pair = ms("ast_per_min", "ast_sd_per_min", 3.0)
-    elif market_label == "PROP 3PT": pair = ms("threes_per_min", "threes_sd_per_min", 2.0)
+    df = get_player_gamelog(pid, season)
+    if df is None or df.empty:
+        return None
+
+    df = df.head(last_n).copy()
+    if len(df) < min_games:
+        return None
+
+    if stat == "PTS":
+        vals = df["PTS"].astype(float)
+    elif stat == "REB":
+        vals = df["REB"].astype(float)
+    elif stat == "AST":
+        vals = df["AST"].astype(float)
+    elif stat == "PRA":
+        vals = df["PTS"].astype(float) + df["REB"].astype(float) + df["AST"].astype(float)
     else:
         return None
 
-    if pair is None:
-        return None
-    mean, sd = pair
-    return over_prob(float(line), float(mean), float(sd))
+    over = (vals > float(line)).sum()
+    n = len(vals)
+    p_over = over / n
+
+    try:
+        mins = df["MIN"].astype(float).mean()
+    except Exception:
+        mins = None
+
+    return {
+        "player_id": pid,
+        "games_used": n,
+        "p_over": float(p_over),
+        "avg_min": mins,
+    }

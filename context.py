@@ -1,82 +1,74 @@
 # context.py
-import os
+from __future__ import annotations
+
 import json
+import os
+from typing import Any, Dict, List, Optional
 import urllib.request
-from typing import Optional, Dict, Any, List
+import urllib.error
 
 
-def _normalize_webhook(value: str) -> str:
+def _normalize_secret(v: Optional[str]) -> str:
     """
-    Accept:
-    - raw Discord webhook URL
-    - JSON object copied from Discord (contains "url")
-    - accidentally quoted string
+    Accept either:
+    - plain URL
+    - JSON blob {"url":"https://discord.com/api/webhooks/..."}
+    Strip quotes/spaces.
     """
-    v = (value or "").strip()
+    v = (v or "").strip()
     if not v:
         return ""
-
-    # If it's a JSON blob, extract "url"
-    if v.startswith("{") and v.endswith("}"):
+    if v.startswith("{"):
         try:
-            obj = json.loads(v)
-            v = str(obj.get("url", "")).strip()
+            v = json.loads(v).get("url", "").strip()
         except Exception:
             pass
-
-    # Strip accidental wrapping quotes
-    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
-        v = v[1:-1].strip()
-
+    if v.startswith('"') and v.endswith('"'):
+        v = v[1:-1]
     return v.strip()
 
 
-def _post(url: str, payload: Dict[str, Any]) -> None:
-    url = _normalize_webhook(url)
+def _post_discord(url: str, payload: Dict[str, Any]) -> None:
+    url = _normalize_secret(url)
     if not url:
-        print("❌ Webhook URL manquant/invalid. Payload:", json.dumps(payload, ensure_ascii=False)[:1000])
-        return
+        raise RuntimeError("Discord webhook URL missing")
 
-    data = json.dumps(payload).encode("utf-8")
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=data,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            status = resp.status
-            body = resp.read().decode("utf-8", errors="ignore")
-            print(f"✅ Discord webhook response: HTTP {status}")
-            if body:
-                print("Discord response body:", body[:1000])
-    except Exception as e:
-        print("❌ Erreur en envoyant sur Discord:", repr(e))
-        print("Webhook (masked):", (url[:60] + "...") if len(url) > 60 else url)
-        print("Payload:", json.dumps(payload, ensure_ascii=False)[:1000])
+        with urllib.request.urlopen(req, timeout=20) as r:
+            # Discord returns 204 No Content on success
+            if r.status not in (200, 204):
+                raise RuntimeError(f"Discord HTTP {r.status}")
+    except urllib.error.HTTPError as e:
+        # Most useful error for you: 403 means webhook invalid/old/wrong channel perms
+        raise RuntimeError(f"Discord HTTP {e.code}: Forbidden/Invalid webhook") from e
 
 
-def post_discord_team(content: str = "", embeds: Optional[List[dict]] = None) -> None:
+def post_discord_team(content: str = "", embeds: Optional[List[Dict[str, Any]]] = None) -> None:
     url = os.getenv("DISCORD_TEAM_WEBHOOK", "")
     payload: Dict[str, Any] = {"content": content}
-    if embeds is not None:
+    if embeds:
         payload["embeds"] = embeds
-    _post(url, payload)
+    _post_discord(url, payload)
 
 
-def post_discord_props(content: str = "", embeds: Optional[List[dict]] = None) -> None:
+def post_discord_props(content: str = "", embeds: Optional[List[Dict[str, Any]]] = None) -> None:
     url = os.getenv("DISCORD_PROPS_WEBHOOK", "")
     payload: Dict[str, Any] = {"content": content}
-    if embeds is not None:
+    if embeds:
         payload["embeds"] = embeds
-    _post(url, payload)
+    _post_discord(url, payload)
 
 
-def post_discord_log(content: str = "", embeds: Optional[List[dict]] = None) -> None:
+def post_discord_log(content: str = "", embeds: Optional[List[Dict[str, Any]]] = None) -> None:
     url = os.getenv("DISCORD_LOG_WEBHOOK", "")
     payload: Dict[str, Any] = {"content": content}
-    if embeds is not None:
+    if embeds:
         payload["embeds"] = embeds
-    _post(url, payload)
+    _post_discord(url, payload)

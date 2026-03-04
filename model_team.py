@@ -1,147 +1,170 @@
-# model_team.py
+# model_team.py (V8)
+# Team "model-first" margin model with script mixture driven by mu + volatility + fragility proxies.
+
 from __future__ import annotations
 
-import json
+from dataclasses import dataclass
+from typing import Dict, Any, Tuple
 import math
-from typing import Any, Dict, Optional, Tuple
 
-from utils import clamp, phi
-
-
-HCA_PTS = 2.3  # home court advantage baseline
+from utils import norm_team, clamp, phi
 
 
-def _load_team_features() -> Dict[str, Dict[str, Any]]:
-    try:
-        with open("data/team_features.json", "r", encoding="utf-8") as f:
-            return json.load(f) or {}
-    except Exception:
+@dataclass
+class ScriptWeights:
+    w_close: float
+    w_controlled: float
+    w_blowout: float
+
+
+def _get_feat(features: Dict[str, Any], team_norm: str) -> Dict[str, Any]:
+    # features can be keyed by raw team names; normalize keys
+    if not features:
         return {}
+    if "__norm_cache__" in features:
+        cache = features["__norm_cache__"]
+    else:
+        cache = {norm_team(k): v for k, v in features.items() if isinstance(v, dict)}
+        features["__norm_cache__"] = cache
+    return cache.get(team_norm, {}) or {}
 
 
-def _script_weights(mu: float) -> Tuple[float, float, float]:
-    """
-    close/controlled/blowout weights based on expected margin.
-    """
-    a = abs(mu)
-    close = clamp(1.0 - a / 12.0, 0.20, 0.80)
-    blow = clamp((a - 8.0) / 10.0, 0.0, 0.40)
-    controlled = clamp(1.0 - close - blow, 0.10, 0.70)
-    s = close + controlled + blow
-    return close / s, controlled / s, blow / s
-
-
-def margin_model(home: Dict[str, Any], away: Dict[str, Any], inj_mu_home: float = 0.0, inj_mu_away: float = 0.0, inj_sigma_mult: float = 1.0) -> Tuple[float, float]:
-    """
-    Return (mu, sigma) for home margin.
-    Uses net_rating if available; else fallback to 0 with wider sigma.
-    """
-    h_net = home.get("net_rating")
-    a_net = away.get("net_rating")
-
-    if h_net is None or a_net is None:
-        # fallback: uncertain
-        mu = HCA_PTS + float(inj_mu_home) - float(inj_mu_away)
-        sigma = 13.5 * float(inj_sigma_mult)
-        return mu, sigma
-
-    mu = float(h_net) - float(a_net) + HCA_PTS + float(inj_mu_home) - float(inj_mu_away)
-
-    # sigma baseline; inflate with pace (higher pace -> more variance)
-    h_pace = home.get("pace")
-    a_pace = away.get("pace")
-    pace = None
-    if h_pace is not None and a_pace is not None:
-        pace = 0.5 * (float(h_pace) + float(a_pace))
-    sigma = 12.0
-    if pace:
-        sigma *= math.sqrt(clamp(pace / 100.0, 0.85, 1.20))
-
-    # script mixture increases variance
-    w_close, w_ctrl, w_blow = _script_weights(mu)
-    sig_close, sig_ctrl, sig_blow = 10.5, 12.0, 15.0
-    sigma_eff = math.sqrt(w_close * sig_close**2 + w_ctrl * sig_ctrl**2 + w_blow * sig_blow**2)
-
-    sigma_eff *= float(inj_sigma_mult)
-
-    return mu, max(9.5, sigma_eff)
-
-
-def expected_total(home: Dict[str, Any], away: Dict[str, Any], inj_total_shift: float = 0.0, inj_sigma_mult: float = 1.0) -> Optional[Tuple[float, float]]:
-    """
-    Return (mu_total, sigma_total) using pace + ORtg/DRtg if available.
-    """
-    h_pace = home.get("pace"); a_pace = away.get("pace")
-    h_or = home.get("ortg"); a_or = away.get("ortg")
-    h_dr = home.get("drtg"); a_dr = away.get("drtg")
-
-    if None in (h_pace, a_pace, h_or, a_or, h_dr, a_dr):
-        return None
-
-    pace = 0.5 * (float(h_pace) + float(a_pace))
-    home_ppp = 0.5 * (float(h_or) + float(a_dr)) / 100.0
-    away_ppp = 0.5 * (float(a_or) + float(h_dr)) / 100.0
-    mu = float(pace * (home_ppp + away_ppp)) + float(inj_total_shift)
-
-    sigma = 22.0 * math.sqrt(clamp(pace / 100.0, 0.85, 1.25))
-    sigma *= float(inj_sigma_mult)
-    return mu, sigma
-
-
-def p_home_win(mu: float, sigma: float) -> float:
-    z = (mu - 0.0) / sigma
-    return clamp(phi(z), 0.01, 0.99)
-
-
-def p_home_cover(mu: float, sigma: float, spread_home: float) -> float:
-    # cover if margin_home > -spread_home
-    thresh = -float(spread_home)
-    z = (mu - thresh) / sigma
-    return clamp(phi(z), 0.01, 0.99)
-
-
-def p_total_over(mu_total: float, sigma_total: float, total_line: float) -> float:
-    z = (float(mu_total) - float(total_line)) / float(sigma_total)
-    return clamp(phi(z), 0.01, 0.99)
-
-
-def team_p_model(
-    market: str,
-    selection: str,
-    line: Optional[float],
-    away_team: str,
+def margin_prior_mu_sigma(
     home_team: str,
-    features: Optional[Dict[str, Dict[str, Any]]] = None,
-    inj_mu_home: float = 0.0,
-    inj_mu_away: float = 0.0,
-    inj_sigma_mult: float = 1.0,
-) -> Optional[float]:
-    features = features if features is not None else _load_team_features()
-    home = features.get(home_team) or {}
-    away = features.get(away_team) or {}
+    away_team: str,
+    features: Dict[str, Any],
+    inj_adjust: Dict[str, Dict[str, float]] | None = None,
+) -> Tuple[float, float, Dict[str, float]]:
+    """
+    Returns (mu_points, sigma_points, debug)
+    mu based on net rating differential + HCA + simple rest/travel if present.
+    sigma base then adjusted by volatility.
+    """
+    h = norm_team(home_team)
+    a = norm_team(away_team)
 
-    mu, sigma = margin_model(home, away, inj_mu_home=inj_mu_home, inj_mu_away=inj_mu_away, inj_sigma_mult=inj_sigma_mult)
+    hf = _get_feat(features, h)
+    af = _get_feat(features, a)
 
-    if market == "H2H":
-        p_h = p_home_win(mu, sigma)
-        if selection == home_team:
-            return p_h
-        if selection == away_team:
-            return 1.0 - p_h
-        return None
+    # Base net rating prior (very robust)
+    h_net = float(hf.get("net_rating", hf.get("netrtg", 0.0)) or 0.0)
+    a_net = float(af.get("net_rating", af.get("netrtg", 0.0)) or 0.0)
 
-    if market == "SPREAD" and line is not None:
-        # line is signed for selection
-        spread_home = float(line) if selection == home_team else -float(line)
-        p_h = p_home_cover(mu, sigma, spread_home)
-        return p_h if selection == home_team else (1.0 - p_h)
+    # Optional rest/travel proxies if you store them
+    h_rest = float(hf.get("rest_adj", 0.0) or 0.0)
+    a_rest = float(af.get("rest_adj", 0.0) or 0.0)
 
-    if market == "TOTAL" and line is not None:
-        et = expected_total(home, away, inj_total_shift=(inj_mu_home + inj_mu_away), inj_sigma_mult=inj_sigma_mult)
-        if et is None:
-            return None
-        mu_t, sig_t = et
-        p_over = p_total_over(mu_t, sig_t, float(line))
-        return p_over if selection == "Over" else (1.0 - p_over)
+    # HCA
+    hca = float(hf.get("hca", 2.1) or 2.1)
 
-    return None
+    mu = (h_net - a_net) + (h_rest - a_rest) + hca
+
+    # Injury adjustment
+    inj_adjust = inj_adjust or {}
+    h_inj = inj_adjust.get(h, {})
+    a_inj = inj_adjust.get(a, {})
+    mu += float(h_inj.get("mu", 0.0)) - float(a_inj.get("mu", 0.0))
+
+    # Base sigma (NBA spread residual std tends to live ~11-13; keep stable)
+    sigma = float(hf.get("sigma_base", 12.0) or 12.0)
+
+    # Increase sigma if injuries uncertain (Q/D)
+    sigma *= float(h_inj.get("sigma_mult", 1.0))
+    sigma *= float(a_inj.get("sigma_mult", 1.0))
+
+    dbg = {
+        "h_net": h_net,
+        "a_net": a_net,
+        "h_rest": h_rest,
+        "a_rest": a_rest,
+        "hca": hca,
+        "h_inj_mu": float(h_inj.get("mu", 0.0)),
+        "a_inj_mu": float(a_inj.get("mu", 0.0)),
+        "sigma": sigma,
+    }
+    return float(mu), float(clamp(sigma, 9.5, 16.5)), dbg
+
+
+def script_weights(
+    mu: float,
+    injury_vol: float = 0.0,
+    rotation_fragility: float = 0.0,
+) -> ScriptWeights:
+    """
+    Close/controlled/blowout mixture.
+    Depends on:
+      - abs(mu)
+      - injury volatility (more chaos -> more blowout/variance)
+      - rotation fragility (more chaos -> more blowout/variance)
+    """
+    x = abs(mu)
+
+    # Base blowout pressure from margin
+    base_blow = clamp((x - 6.0) / 12.0, 0.0, 1.0)  # ~0 at 6, ~1 at 18
+    # Chaos contributes to blowout probability and reduces "close"
+    chaos = clamp(0.06 * injury_vol + 0.06 * rotation_fragility, 0.0, 0.35)
+
+    w_blow = clamp(0.10 + 0.60 * base_blow + chaos, 0.08, 0.85)
+    w_close = clamp(0.60 - 0.45 * base_blow - 0.60 * chaos, 0.08, 0.80)
+    w_ctrl = clamp(1.0 - w_blow - w_close, 0.08, 0.70)
+
+    # Renormalize
+    s = w_blow + w_close + w_ctrl
+    return ScriptWeights(w_close / s, w_ctrl / s, w_blow / s)
+
+
+def sigma_effective(sigma: float, w: ScriptWeights) -> float:
+    # In blowout scripts: outcome variance higher but starters minutes lower -> pricing noisy
+    sigma_close = sigma * 0.95
+    sigma_ctrl = sigma * 1.00
+    sigma_blow = sigma * 1.15
+    return float(w.w_close * sigma_close + w.w_controlled * sigma_ctrl + w.w_blowout * sigma_blow)
+
+
+def p_real_spread(line: float, mu: float, sigma: float) -> float:
+    # Probability home covers (home line could be -4.5 etc). For book lines we evaluate side explicitly elsewhere.
+    z = (line - mu) / max(1e-9, sigma)
+    return float(clamp(1.0 - phi(z), 0.01, 0.99))
+
+
+def p_real_ml(mu: float, sigma: float) -> float:
+    # Home win prob from margin normal approx
+    z = (0.0 - mu) / max(1e-9, sigma)
+    return float(clamp(1.0 - phi(z), 0.01, 0.99))
+
+
+def p_real_total(line: float, base_total_mu: float, sigma_total: float) -> float:
+    # Placeholder if you later model totals. For now: treat as normal around base_total_mu.
+    z = (line - base_total_mu) / max(1e-9, sigma_total)
+    return float(clamp(1.0 - phi(z), 0.01, 0.99))
+
+
+def team_model(
+    home_team: str,
+    away_team: str,
+    features: Dict[str, Any],
+    inj_adjust: Dict[str, Dict[str, float]] | None = None,
+    rotation_fragility: float = 0.0,
+) -> Dict[str, Any]:
+    """
+    Returns a model bundle used by engine.py:
+      {mu, sigma, sigma_eff, scripts, dbg}
+    """
+    mu, sigma, dbg = margin_prior_mu_sigma(home_team, away_team, features, inj_adjust=inj_adjust)
+
+    # Combine injury volatility from both teams
+    h = norm_team(home_team)
+    a = norm_team(away_team)
+    inj_adjust = inj_adjust or {}
+    injury_vol = float(inj_adjust.get(h, {}).get("vol", 0.0)) + float(inj_adjust.get(a, {}).get("vol", 0.0))
+
+    w = script_weights(mu, injury_vol=injury_vol, rotation_fragility=rotation_fragility)
+    sig_eff = sigma_effective(sigma, w)
+
+    return {
+        "mu": float(mu),
+        "sigma": float(sigma),
+        "sigma_eff": float(sig_eff),
+        "scripts": {"close": w.w_close, "controlled": w.w_controlled, "blowout": w.w_blowout},
+        "dbg": dbg,
+    }

@@ -1,24 +1,21 @@
 {
-  "min_bookmakers": 2,
-  "prefer_fr_books": false,
-  "max_ml_total": 2,
-  "target_team": 3,
-  "target_props": 3,
-  "regions_team": [
-    "us",
-    "us2",
-    "uk",
-    "eu",
-    "au",
-    "fr"
+  "regions_priority": ["us"],
+
+  "markets": [
+    "h2h",
+    "spreads",
+    "totals"
   ],
-  "regions_props": [
-    "us",
-    "us2",
-    "uk",
-    "eu",
-    "au",
-    "fr"
-  ],
-  "team_features_path": "data/team_features.json"
+
+  "model_weight": 0.7,
+  "clip_vs_market": 0.08,
+
+  "max_ml_per_day": 2,
+  "max_odds_ml": 2.4,
+
+  "min_edge": 0.015,
+  "min_ev": 0.01,
+
+  "max_picks_team": 3,
+  "max_picks_props": 3
 }

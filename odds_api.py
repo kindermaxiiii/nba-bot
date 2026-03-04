@@ -1,79 +1,89 @@
+# odds_api.py
+from __future__ import annotations
+
 import os
 import time
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import requests
 
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
-BASE_URL = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
 
-DEFAULT_ODDS_FORMAT = "decimal"
-DEFAULT_DATE_FORMAT = "iso"
+ODDS_API_BASE = "https://api.the-odds-api.com/v4/sports"
+NBA_SPORT_KEY = "basketball_nba"
 
 
-class OddsApiError(RuntimeError):
-    pass
+def _env(name: str, default: Optional[str] = None) -> Optional[str]:
+    v = os.getenv(name)
+    if v is None or str(v).strip() == "":
+        return default
+    return v
 
 
-def _request_json(url: str, params: Dict[str, Any], timeout: int, retries: int = 2) -> Tuple[int, Any, str]:
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, retries + 1):
-        try:
-            r = requests.get(url, params=params, timeout=timeout)
-            txt = r.text or ""
-            if r.headers.get("content-type", "").startswith("application/json"):
-                try:
-                    return r.status_code, r.json(), txt
-                except Exception:
-                    return r.status_code, None, txt
-            return r.status_code, None, txt
-        except Exception as e:
-            last_exc = e
-            if attempt < retries:
-                time.sleep(0.7 * attempt)
-    raise OddsApiError(f"Request failed after {retries} retries: {last_exc}")
+def _as_csv(x: Union[str, List[str], None]) -> str:
+    if x is None:
+        return ""
+    if isinstance(x, str):
+        return x
+    return ",".join([str(s).strip() for s in x if str(s).strip()])
 
 
 def fetch_odds_with_fallback(
-    markets: str,
-    regions_priority: List[str],
-    odds_format: str = DEFAULT_ODDS_FORMAT,
-    date_format: str = DEFAULT_DATE_FORMAT,
-    timeout: int = 25,
-    retries: int = 2,
+    markets: Union[str, List[str]],
+    regions_priority: Optional[List[str]] = None,
+    odds_format: str = "decimal",
+    date_format: str = "iso",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    if not ODDS_API_KEY:
-        raise OddsApiError("ODDS_API_KEY missing (GitHub Secret).")
+    """Return (games, meta).
 
-    tried: List[str] = []
-    errors: List[str] = []
+    games is a List[Dict] in OddsAPI format.
+    meta includes regions_used, markets_used, remaining_requests if present.
+    """
 
+    api_key = _env("ODDS_API_KEY")
+    if not api_key:
+        raise RuntimeError("ODDS_API_KEY missing")
+
+    markets_csv = _as_csv(markets)
+    if not markets_csv:
+        raise RuntimeError("No markets specified")
+
+    regions_priority = regions_priority or ["us"]
+
+    last_err: Optional[str] = None
     for region in regions_priority:
-        tried.append(region)
         params = {
-            "apiKey": ODDS_API_KEY,
+            "apiKey": api_key,
             "regions": region,
-            "markets": markets,
+            "markets": markets_csv,
             "oddsFormat": odds_format,
             "dateFormat": date_format,
         }
+        url = f"{ODDS_API_BASE}/{NBA_SPORT_KEY}/odds"
+        try:
+            r = requests.get(url, params=params, timeout=20)
+            meta = {
+                "regions_used": region,
+                "markets_used": markets_csv,
+                "status_code": r.status_code,
+            }
+            if "x-requests-remaining" in r.headers:
+                meta["requests_remaining"] = r.headers.get("x-requests-remaining")
+            if "x-requests-used" in r.headers:
+                meta["requests_used"] = r.headers.get("x-requests-used")
 
-        status, js, raw = _request_json(BASE_URL, params=params, timeout=timeout, retries=retries)
+            if r.status_code != 200:
+                last_err = f"HTTP {r.status_code}: {r.text[:300]}"
+                continue
 
-        if status == 401 or "INVALID_KEY" in (raw or ""):
-            raise OddsApiError(f"INVALID_KEY: {raw[:200]}")
-        if status == 422:
-            errors.append(f"422 region={region} markets={markets}: {raw[:200]}")
+            data = r.json()
+            if isinstance(data, list) and data:
+                return data, meta
+            # empty list -> try next region
+            last_err = "empty_list"
+        except Exception as e:
+            last_err = repr(e)
             continue
-        if status >= 400:
-            errors.append(f"{status} region={region} markets={markets}: {raw[:200]}")
-            continue
 
-        games = js if isinstance(js, list) else []
-        return games, {
-            "chosen_region": region,
-            "regions_tried": tried,
-            "errors": errors,
-            "markets": markets,
-        }
+        time.sleep(0.2)
 
-    raise OddsApiError(f"All regions failed. tried={tried} errors={errors[-3:]}")
+    raise RuntimeError(f"OddsAPI fetch failed: {last_err}")

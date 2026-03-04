@@ -1,42 +1,35 @@
-name: NBA Bot
-
-on:
-  schedule:
-    - cron: "30 16 * * *"
-    - cron: "30 21 * * *"
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: nba-bot-main
-  cancel-in-progress: false
-
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Build team features (recommended)
-        run: python build_team_features.py
-
-      - name: Run bot
+      - name: Discord sanity check (strict)
         env:
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
           DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
           DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
-          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
-        run: python main.py
+        run: |
+          python - <<'PY'
+          import os, json, urllib.request, urllib.error
+
+          def post(name, url):
+              url=(url or "").strip()
+              if not url:
+                  print(f"{name}: MISSING")
+                  return False
+              data=json.dumps({"content": f"✅ {name} webhook OK (from nba_bot.yml)"}).encode("utf-8")
+              req=urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"}, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      print(f"{name}: HTTP_{r.status}")
+                      return r.status in (200,204)
+              except urllib.error.HTTPError as e:
+                  print(f"{name}: HTTP_{e.code}")
+                  return False
+              except Exception as e:
+                  print(f"{name}: ERR_{type(e).__name__}")
+                  return False
+
+          ok = True
+          ok &= post("DISCORD_LOG_WEBHOOK", os.getenv("DISCORD_LOG_WEBHOOK"))
+          ok &= post("DISCORD_TEAM_WEBHOOK", os.getenv("DISCORD_TEAM_WEBHOOK"))
+          ok &= post("DISCORD_PROPS_WEBHOOK", os.getenv("DISCORD_PROPS_WEBHOOK"))
+
+          if not ok:
+              raise SystemExit("Discord sanity check failed (stop here). Fix secrets/webhooks.")
+          PY

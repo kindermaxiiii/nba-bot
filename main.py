@@ -17,6 +17,28 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     return v
 
 
+def _safe_preview(obj: Any, limit: int = 900) -> str:
+    try:
+        s = json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        s = str(obj)
+    if len(s) > limit:
+        s = s[:limit] + "…"
+    return s
+
+
+def _maybe_json_load(x: Any) -> Any:
+    # OddsAPI wrappers sometimes return a JSON string.
+    if isinstance(x, str):
+        s = x.strip()
+        if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+            try:
+                return json.loads(s)
+            except Exception:
+                return x
+    return x
+
+
 def _flatten_games(obj: Any) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
 
@@ -36,6 +58,7 @@ def _flatten_games(obj: Any) -> List[Dict[str, Any]]:
         if isinstance(x, list):
             for it in x:
                 rec(it)
+            return
 
     rec(obj)
     return out
@@ -43,13 +66,7 @@ def _flatten_games(obj: Any) -> List[Dict[str, Any]]:
 
 def _discord_embed_top(title: str, picks: List[Dict[str, Any]], color: int) -> Dict[str, Any]:
     if not picks:
-        return {
-            "title": title,
-            "description": "Aucun pick (EV>=0 introuvable après filtres).",
-            "color": 15158332,
-        }
-
-    lines: List[str] = []
+        return {"title": title, "description": "Aucun pick.", "color": 15158332}
 
     def pct(x: Any) -> str:
         try:
@@ -63,6 +80,7 @@ def _discord_embed_top(title: str, picks: List[Dict[str, Any]], color: int) -> D
         except Exception:
             return "?"
 
+    lines: List[str] = []
     for i, p in enumerate(picks, 1):
         line = p.get("line")
         line_s = f" | Line: {line}" if line is not None else ""
@@ -70,26 +88,12 @@ def _discord_embed_top(title: str, picks: List[Dict[str, Any]], color: int) -> D
         odds = p.get("odds")
         odds_s = f"{float(odds):.2f}" if odds is not None else "?"
 
-        book = p.get("book") or "?"
-        match = p.get("match") or "?"
-        market = p.get("market") or "?"
-        selection = p.get("selection") or "?"
-
-        p_model = p.get("p_model")
-        p_mkt = p.get("p_mkt")
-        p_real = p.get("fair_prob")
-
-        ev = p.get("ev")
-        edge = p.get("edge")
-        dev = p.get("dev")
-        score = p.get("score")
-
         lines.append(
-            f"**#{i}** — {match}\n"
-            f"Market: **{market}**{line_s}\n"
-            f"Pick: **{selection}** @ **{odds_s}** ({book})\n"
-            f"p_model: {pct(p_model)} | p_mkt: {pct(p_mkt)} | p_real: {pct(p_real)}\n"
-            f"EV: {pct(ev)} | Edge: {pct(edge)} | Dev: {pct(dev)} | Score: {num(score)}/100\n"
+            f"**#{i}** — {p.get('match','?')}\n"
+            f"Market: **{p.get('market','?')}**{line_s}\n"
+            f"Pick: **{p.get('selection','?')}** @ **{odds_s}** ({p.get('book','?')})\n"
+            f"p_model: {pct(p.get('p_model'))} | p_mkt: {pct(p.get('p_mkt'))} | p_real: {pct(p.get('fair_prob'))}\n"
+            f"EV: {pct(p.get('ev'))} | Edge: {pct(p.get('edge'))} | Dev: {pct(p.get('dev'))} | Score: {num(p.get('score'))}/100\n"
         )
 
     return {"title": title, "description": "\n".join(lines), "color": color}
@@ -98,6 +102,7 @@ def _discord_embed_top(title: str, picks: List[Dict[str, Any]], color: int) -> D
 def main() -> None:
     cfg = load_config("config.json")
 
+    # 0) Quick env sanity
     api_key = _env("ODDS_API_KEY")
     if not api_key:
         msg = "❌ ODDS_API_KEY manquante dans les Secrets GitHub."
@@ -105,9 +110,9 @@ def main() -> None:
         print(msg)
         return
 
-    # Fetch odds
+    # 1) Fetch odds
     try:
-        raw_games = fetch_odds_with_fallback(
+        raw = fetch_odds_with_fallback(
             markets=cfg.markets,
             regions_priority=cfg.regions_priority,
         )
@@ -117,14 +122,37 @@ def main() -> None:
         print(msg)
         return
 
-    games = _flatten_games(raw_games)
-    if not games:
-        msg = "❌ Aucun match reçu depuis OddsAPI (games vide après flatten). Vérifie ODDS_API_KEY / régions / quota."
+    raw = _maybe_json_load(raw)
+
+    # 2) If OddsAPI returned an error object, show it clearly
+    if isinstance(raw, dict) and ("error_code" in raw or "message" in raw):
+        msg = (
+            "❌ OddsAPI a renvoyé une ERREUR (pas une liste de matchs).\n"
+            f"error_code: {raw.get('error_code')}\n"
+            f"message: {raw.get('message')}\n"
+            f"details: {raw.get('details_url')}\n"
+            f"preview: {_safe_preview(raw)}"
+        )
         post_discord_log(content=msg)
         print(msg)
         return
 
-    # Run engine
+    # 3) Flatten games
+    games = _flatten_games(raw)
+
+    # 4) Debug if empty
+    if not games:
+        msg = (
+            "❌ Aucun match reçu depuis OddsAPI (games vide après flatten).\n"
+            f"type(raw)={type(raw).__name__}\n"
+            f"preview(raw)={_safe_preview(raw)}\n"
+            "À vérifier: regions dans config.json, marchés autorisés par ton plan OddsAPI, quota."
+        )
+        post_discord_log(content=msg)
+        print(msg)
+        return
+
+    # 5) Run engine
     try:
         result = run_engine(games, cfg)
     except Exception as e:
@@ -143,22 +171,16 @@ def main() -> None:
         "description": (
             f"Games(flat): {meta.get('games')} | "
             f"markets_tested: {meta.get('markets_tested')} | "
-            f"model_weight: {meta.get('model_weight')} | "
-            f"clip: {meta.get('clip_vs_market')} | "
-            f"maxML/day: {meta.get('max_ml_per_day')} | "
-            f"maxMLodds: {meta.get('max_odds_ml')}"
+            f"regions_priority: {getattr(cfg, 'regions_priority', None)} | "
+            f"markets(cfg): {getattr(cfg, 'markets', None)}"
         ),
         "color": 3447003,
     }
     post_discord_log(content="", embeds=[meta_embed])
 
-    # TEAM
-    team_embed = _discord_embed_top("NBA — TOP 3 TEAM", team_picks, color=3066993)
-    post_discord_team(content="", embeds=[team_embed])
-
-    # PROPS
-    props_embed = _discord_embed_top("NBA — TOP 3 PROPS", prop_picks, color=10181046)
-    post_discord_props(content="", embeds=[props_embed])
+    # TEAM / PROPS
+    post_discord_team(content="", embeds=[_discord_embed_top("NBA — TOP 3 TEAM", team_picks, 3066993)])
+    post_discord_props(content="", embeds=[_discord_embed_top("NBA — TOP 3 PROPS", prop_picks, 10181046)])
 
     print(json.dumps({"meta": meta, "team_picks": team_picks, "prop_picks": prop_picks}, indent=2, ensure_ascii=False))
 

@@ -1,28 +1,38 @@
-# main.py
-import os
-from context import post_discord_team, post_discord_props, post_discord_log
+name: NBA Bot
 
-def _mask(v: str) -> str:
-    v = (v or "").strip()
-    if not v:
-        return "MISSING"
-    if len(v) < 12:
-        return "SET(short)"
-    return f"SET({v[:4]}...{v[-4:]})"
+on:
+  workflow_dispatch:
 
-def main() -> None:
-    # 1) Print env to Actions logs
-    print("DEBUG ENV:",
-          "TEAM=", _mask(os.getenv("DISCORD_TEAM_WEBHOOK", "")),
-          "PROPS=", _mask(os.getenv("DISCORD_PROPS_WEBHOOK", "")),
-          "LOG=", _mask(os.getenv("DISCORD_LOG_WEBHOOK", "")))
+jobs:
+  test_discord:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    # 2) Send 3 messages (plain text only)
-    post_discord_log(content="✅ NBA BOT TEST: LOG webhook works")
-    post_discord_team(content="✅ NBA BOT TEST: TEAM webhook works")
-    post_discord_props(content="✅ NBA BOT TEST: PROPS webhook works")
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    print("DEBUG: messages sent (if webhooks valid).")
+      - name: Install deps
+        run: |
+          python -V
+          pip install -r requirements.txt || true
 
-if __name__ == "__main__":
-    main()
+      - name: Print secret presence (masked)
+        env:
+          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
+          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
+          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
+        run: |
+          echo "TEAM=${DISCORD_TEAM_WEBHOOK:0:4}...${DISCORD_TEAM_WEBHOOK: -4}"
+          echo "PROPS=${DISCORD_PROPS_WEBHOOK:0:4}...${DISCORD_PROPS_WEBHOOK: -4}"
+          echo "LOG=${DISCORD_LOG_WEBHOOK:0:4}...${DISCORD_LOG_WEBHOOK: -4}"
+
+      - name: Run main.py (discord test)
+        env:
+          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
+          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
+          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
+        run: python main.py

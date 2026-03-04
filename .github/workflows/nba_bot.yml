@@ -1,4 +1,4 @@
-name: NBA Bot (TEST DISCORD)
+name: NBA Bot (DEBUG WEBHOOKS)
 
 on:
   workflow_dispatch:
@@ -6,38 +6,55 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: nba-bot-test
-  cancel-in-progress: false
-
 jobs:
-  test_discord:
+  debug_webhooks:
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: TEST Discord LOG webhook (should post "TEST DISCORD OK")
+      - name: Check secrets are present (do NOT print values)
         env:
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
-        run: python -c "from context import post_discord_log; post_discord_log('TEST DISCORD OK')"
-
-      - name: TEST Discord TEAM webhook (should post "TEST TEAM OK")
-        env:
           DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
-        run: python -c "from context import post_discord_team; post_discord_team('TEST TEAM OK')"
-
-      - name: TEST Discord PROPS webhook (should post "TEST PROPS OK")
-        env:
           DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
-        run: python -c "from context import post_discord_props; post_discord_props('TEST PROPS OK')"
+        run: |
+          set -e
+          echo "LOG set?  $([ -n "$DISCORD_LOG_WEBHOOK" ] && echo YES || echo NO)"
+          echo "TEAM set? $([ -n "$DISCORD_TEAM_WEBHOOK" ] && echo YES || echo NO)"
+          echo "PROPS set? $([ -n "$DISCORD_PROPS_WEBHOOK" ] && echo YES || echo NO)"
+
+      - name: Send TEST to DISCORD_LOG_WEBHOOK
+        env:
+          URL: ${{ secrets.DISCORD_LOG_WEBHOOK }}
+        run: |
+          set -e
+          if [ -z "$URL" ]; then echo "DISCORD_LOG_WEBHOOK is empty"; exit 1; fi
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -d '{"content":"TEST LOG OK (from GitHub Actions)"}' \
+            "$URL")
+          echo "HTTP=$CODE (expected 204)"
+
+      - name: Send TEST to DISCORD_TEAM_WEBHOOK
+        env:
+          URL: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
+        run: |
+          set -e
+          if [ -z "$URL" ]; then echo "DISCORD_TEAM_WEBHOOK is empty"; exit 1; fi
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -d '{"content":"TEST TEAM OK (from GitHub Actions)"}' \
+            "$URL")
+          echo "HTTP=$CODE (expected 204)"
+
+      - name: Send TEST to DISCORD_PROPS_WEBHOOK
+        env:
+          URL: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
+        run: |
+          set -e
+          if [ -z "$URL" ]; then echo "DISCORD_PROPS_WEBHOOK is empty"; exit 1; fi
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -d '{"content":"TEST PROPS OK (from GitHub Actions)"}' \
+            "$URL")
+          echo "HTTP=$CODE (expected 204)"

@@ -26,75 +26,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Install dependencies
-        run: |
-          python -V
-          pip install --upgrade pip
-          pip install -r requirements.txt
-
-      # Non-blocking: on teste les 3 webhooks, on affiche le statut,
-      # MAIS on ne fail jamais le workflow ici.
-      - name: Discord sanity check (NON-BLOCKING)
-        env:
-          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
-          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
-          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
-        run: |
-          python - <<'PY'
-          import os, json, urllib.request, urllib.error
-
-          def normalize(v: str) -> str:
-              v = (v or "").strip()
-              # accepte URL brute ou JSON {"url":"..."}
-              if v.startswith("{"):
-                  try:
-                      v = json.loads(v).get("url", "").strip()
-                  except Exception:
-                      pass
-              # enlève guillemets accidentels
-              if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
-                  v = v[1:-1]
-              return (v or "").strip()
-
-          def post(url: str, content: str):
-              url = normalize(url)
-              if not url:
-                  return (False, "EMPTY_URL")
-              data = json.dumps({"content": content}).encode("utf-8")
-              req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"}, method="POST")
-              try:
-                  with urllib.request.urlopen(req, timeout=15) as r:
-                      return (r.status in (200, 204), f"HTTP_{r.status}")
-              except urllib.error.HTTPError as e:
-                  return (False, f"HTTP_{e.code}")
-              except Exception as e:
-                  return (False, f"ERR_{type(e).__name__}")
-
-          hooks = [
-              ("DISCORD_LOG_WEBHOOK",   os.getenv("DISCORD_LOG_WEBHOOK","")),
-              ("DISCORD_TEAM_WEBHOOK",  os.getenv("DISCORD_TEAM_WEBHOOK","")),
-              ("DISCORD_PROPS_WEBHOOK", os.getenv("DISCORD_PROPS_WEBHOOK","")),
-          ]
-
-          print("Discord sanity check (non-blocking):")
-          for name, raw in hooks:
-              ok, st = post(raw, f"✅ {name} test message from GitHub Actions")
-              print(f"  - {name}: ok={ok} status={st}")
-
-          print("NOTE: even if some webhooks fail, workflow continues.")
-          PY
-
-      - name: Build team features (optional)
-        env:
-          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
-        run: |
-          if [ -f build_team_features.py ]; then
-            python build_team_features.py
-          else
-            echo "build_team_features.py not found - skipping"
-          fi
+        run: pip install -r requirements.txt
 
       - name: Run bot
         env:

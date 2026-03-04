@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict
 
 from nba_api.stats.endpoints import leaguedashteamstats
 
@@ -23,15 +22,13 @@ def main() -> None:
     os.makedirs("data", exist_ok=True)
     season = _season_string(datetime.now(timezone.utc))
 
-    out: Dict[str, Dict[str, Any]] = {}
-
+    out = {}
     try:
         df = leaguedashteamstats.LeagueDashTeamStats(
             season=season,
             per_mode_detailed="Per100Possessions"
         ).get_data_frames()[0]
 
-        # Columns typically include: TEAM_NAME, OFF_RATING, DEF_RATING, NET_RATING, PACE
         for _, r in df.iterrows():
             name = str(r.get("TEAM_NAME"))
             out[name] = {
@@ -43,10 +40,8 @@ def main() -> None:
 
         with open("data/team_features.json", "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2, ensure_ascii=False)
-
-        print(f"Saved team_features.json for season {season} with {len(out)} teams.")
+        print(f"Saved data/team_features.json ({len(out)} teams) for season {season}")
     except Exception as e:
-        # fallback: still write an empty file so the bot doesn't crash
         with open("data/team_features.json", "w", encoding="utf-8") as f:
             json.dump({}, f, indent=2, ensure_ascii=False)
         print("Failed to build team features:", repr(e))

@@ -1,11 +1,23 @@
 name: NBA Bot
 
 on:
+  schedule:
+    - cron: "30 16 * * *"
+    - cron: "30 21 * * *"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: nba-bot-main
+  cancel-in-progress: false
+
 jobs:
-  test_discord:
+  run:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -15,23 +27,18 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps
-        run: |
-          python -V
-          pip install -r requirements.txt || true
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-      - name: Print secret presence (masked)
+      - name: Build team features (optional but recommended)
         env:
-          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
-          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
-          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
-        run: |
-          echo "TEAM=${DISCORD_TEAM_WEBHOOK:0:4}...${DISCORD_TEAM_WEBHOOK: -4}"
-          echo "PROPS=${DISCORD_PROPS_WEBHOOK:0:4}...${DISCORD_PROPS_WEBHOOK: -4}"
-          echo "LOG=${DISCORD_LOG_WEBHOOK:0:4}...${DISCORD_LOG_WEBHOOK: -4}"
+          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
+        run: python build_team_features.py
 
-      - name: Run main.py (discord test)
+      - name: Run bot
         env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
           DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
           DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}

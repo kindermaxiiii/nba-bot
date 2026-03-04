@@ -1,19 +1,66 @@
-      - name: Discord sanity check (strict)
+name: NBA Bot
+
+on:
+  schedule:
+    # 16:30 and 21:30 UTC
+    - cron: "30 16 * * *"
+    - cron: "30 21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nba-bot-main
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # STRICT: fail the run if Discord webhooks are not working (so you see the real problem)
+      - name: Discord sanity check (STRICT)
         env:
-          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
           DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
           DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
+          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
         run: |
           python - <<'PY'
           import os, json, urllib.request, urllib.error
 
-          def post(name, url):
-              url=(url or "").strip()
+          def clean(v: str) -> str:
+              v = (v or "").strip()
+              # allow accidental quotes
+              if v.startswith('"') and v.endswith('"'):
+                  v = v[1:-1]
+              # allow JSON {"url": "..."}
+              if v.startswith("{"):
+                  try:
+                      v = json.loads(v).get("url","").strip()
+                  except Exception:
+                      pass
+              return v.strip()
+
+          def post(name: str, url: str) -> bool:
+              url = clean(url)
               if not url:
                   print(f"{name}: MISSING")
                   return False
-              data=json.dumps({"content": f"✅ {name} webhook OK (from nba_bot.yml)"}).encode("utf-8")
-              req=urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"}, method="POST")
+              data = json.dumps({"content": f"✅ {name} OK (from nba_bot.yml)"}).encode("utf-8")
+              req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"}, method="POST")
               try:
                   with urllib.request.urlopen(req, timeout=15) as r:
                       print(f"{name}: HTTP_{r.status}")
@@ -26,10 +73,29 @@
                   return False
 
           ok = True
-          ok &= post("DISCORD_LOG_WEBHOOK", os.getenv("DISCORD_LOG_WEBHOOK"))
-          ok &= post("DISCORD_TEAM_WEBHOOK", os.getenv("DISCORD_TEAM_WEBHOOK"))
+          ok &= post("DISCORD_LOG_WEBHOOK",   os.getenv("DISCORD_LOG_WEBHOOK"))
+          ok &= post("DISCORD_TEAM_WEBHOOK",  os.getenv("DISCORD_TEAM_WEBHOOK"))
           ok &= post("DISCORD_PROPS_WEBHOOK", os.getenv("DISCORD_PROPS_WEBHOOK"))
 
           if not ok:
-              raise SystemExit("Discord sanity check failed (stop here). Fix secrets/webhooks.")
+              raise SystemExit("Discord sanity check failed. Fix GitHub Secrets (URLs) / channel permissions / webhook validity.")
           PY
+
+      - name: Build team features (optional)
+        env:
+          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
+        run: |
+          if [ -f build_team_features.py ]; then
+            python build_team_features.py
+          else
+            echo "build_team_features.py not found - skipping"
+          fi
+
+      - name: Run bot
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
+          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
+          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
+          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
+        run: python main.py

@@ -2,12 +2,13 @@ name: NBA Bot
 
 on:
   schedule:
+    # 16:30 and 21:30 UTC (adjust if needed)
     - cron: "30 16 * * *"
     - cron: "30 21 * * *"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: nba-bot-main
@@ -19,6 +20,33 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      - name: Pre-check webhooks (no code)
+        env:
+          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
+          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
+          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
+        run: |
+          python - <<'PY'
+          import os, json, urllib.request
+          def post(url, content):
+              url=(url or '').strip()
+              if not url:
+                  return False
+              data=json.dumps({'content': content}).encode('utf-8')
+              req=urllib.request.Request(url, data=data, headers={'Content-Type':'application/json'}, method='POST')
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      return r.status in (200,204)
+              except Exception:
+                  return False
+          ok_team=post(os.getenv('DISCORD_TEAM_WEBHOOK'), 'NBA BOT DEBUG: TEAM webhook OK (pre-checkout)')
+          ok_props=post(os.getenv('DISCORD_PROPS_WEBHOOK'), 'NBA BOT DEBUG: PROPS webhook OK (pre-checkout)')
+          ok_log=post(os.getenv('DISCORD_LOG_WEBHOOK'), 'NBA BOT DEBUG: workflow started (pre-checkout)')
+          if not (ok_team and ok_props and ok_log):
+              raise SystemExit('Webhook pre-check failed: verify GitHub Secrets contain URL only')
+          print('webhooks ok')
+          PY
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -30,15 +58,35 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Build team features (optional but recommended)
+      - name: Debug (deps installed)
+        env:
+          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
+        run: |
+          python - <<'PY'
+          import os, json, urllib.request
+          url=(os.getenv('DISCORD_LOG_WEBHOOK') or '').strip()
+          if url:
+              data=json.dumps({'content':'NBA BOT DEBUG: deps installed, about to run main.py'}).encode('utf-8')
+              req=urllib.request.Request(url, data=data, headers={'Content-Type':'application/json'}, method='POST')
+              try:
+                  urllib.request.urlopen(req, timeout=15).read()
+              except Exception:
+                  pass
+          PY
+
+      - name: Build team features (optional)
         env:
           BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
-        run: python build_team_features.py
+        run: |
+          if [ -f build_team_features.py ]; then
+            python build_team_features.py
+          else
+            echo "build_team_features.py not found - skipping"
+          fi
 
       - name: Run bot
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
           DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
           DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}

@@ -1,94 +1,45 @@
-name: NBA Bot
+name: Discord Webhook Test
 
 on:
-  schedule:
-    - cron: "30 16 * * *"
-    - cron: "30 21 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: nba-bot-main
-  cancel-in-progress: false
-
 jobs:
-  run:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      # Pre-check webhooks after checkout (still before main)
-      - name: Pre-check Discord webhooks (detailed, non-blocking)
-        env:
-          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
-          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
-          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
+      - name: Post test message to Discord (URL hardcoded)
         run: |
           python - <<'PY'
-          import os, json, urllib.request, urllib.error
+          import json, urllib.request, urllib.error
 
-          def normalize(v: str) -> str:
-              v = (v or "").strip()
-              if v.startswith("{"):
-                  try:
-                      v = json.loads(v).get("url","").strip()
-                  except Exception:
-                      pass
-              if v.startswith('"') and v.endswith('"'):
-                  v = v[1:-1]
-              return v.strip()
+          # ⚠️ Remplace cette URL par TON webhook de #nba-test (salon texte normal, pas thread/forum)
+          url = "PASTE_WEBHOOK_URL_HERE".strip()
 
-          def post(url: str, content: str):
-              url = normalize(url)
-              if not url:
-                  return (False, "EMPTY_URL")
-              data = json.dumps({"content": content}).encode("utf-8")
-              req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"}, method="POST")
-              try:
-                  with urllib.request.urlopen(req, timeout=15) as r:
-                      return (r.status in (200,204), f"HTTP_{r.status}")
-              except urllib.error.HTTPError as e:
-                  return (False, f"HTTP_{e.code}")
-              except Exception as e:
-                  return (False, f"ERR_{type(e).__name__}")
+          payload = {"content": "✅ TEST OK: GitHub Actions -> Discord webhook fonctionne."}
+          data = json.dumps(payload).encode("utf-8")
 
-          ok_team, st_team   = post(os.getenv("DISCORD_TEAM_WEBHOOK",""),  "NBA BOT DEBUG: TEAM webhook OK")
-          ok_props, st_props = post(os.getenv("DISCORD_PROPS_WEBHOOK",""), "NBA BOT DEBUG: PROPS webhook OK")
-          ok_log, st_log     = post(os.getenv("DISCORD_LOG_WEBHOOK",""),   "NBA BOT DEBUG: LOG webhook OK")
+          req = urllib.request.Request(
+              url,
+              data=data,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
 
-          print(f"TEAM_OK={ok_team} {st_team}")
-          print(f"PROPS_OK={ok_props} {st_props}")
-          print(f"LOG_OK={ok_log} {st_log}")
+          try:
+              with urllib.request.urlopen(req, timeout=20) as resp:
+                  print("SUCCESS HTTP", resp.status)
+          except urllib.error.HTTPError as e:
+              body = e.read().decode("utf-8", errors="ignore")
+              print("HTTPERROR", e.code)
+              if body:
+                  print("BODY:", body[:1000])
+              raise
+          except Exception as e:
+              print("FAILED:", repr(e))
+              raise
           PY
-
-      - name: Build team features (optional)
-        env:
-          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
-        run: |
-          if [ -f build_team_features.py ]; then
-            python build_team_features.py
-          else
-            echo "build_team_features.py not found - skipping"
-          fi
-
-      - name: Run bot
-        env:
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
-          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
-          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
-          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
-        run: python main.py

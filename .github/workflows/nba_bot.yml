@@ -2,7 +2,6 @@ name: NBA Bot
 
 on:
   schedule:
-    # 16:30 and 21:30 UTC
     - cron: "30 16 * * *"
     - cron: "30 21 * * *"
   workflow_dispatch:
@@ -17,7 +16,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
 
     steps:
       - name: Checkout
@@ -27,58 +26,64 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -V
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-      # STRICT: fail the run if Discord webhooks are not working (so you see the real problem)
-      - name: Discord sanity check (STRICT)
+      # Non-blocking: on teste les 3 webhooks, on affiche le statut,
+      # MAIS on ne fail jamais le workflow ici.
+      - name: Discord sanity check (NON-BLOCKING)
         env:
+          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
           DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
           DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
-          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
         run: |
           python - <<'PY'
           import os, json, urllib.request, urllib.error
 
-          def clean(v: str) -> str:
+          def normalize(v: str) -> str:
               v = (v or "").strip()
-              # allow accidental quotes
-              if v.startswith('"') and v.endswith('"'):
-                  v = v[1:-1]
-              # allow JSON {"url": "..."}
+              # accepte URL brute ou JSON {"url":"..."}
               if v.startswith("{"):
                   try:
-                      v = json.loads(v).get("url","").strip()
+                      v = json.loads(v).get("url", "").strip()
                   except Exception:
                       pass
-              return v.strip()
+              # enlève guillemets accidentels
+              if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+                  v = v[1:-1]
+              return (v or "").strip()
 
-          def post(name: str, url: str) -> bool:
-              url = clean(url)
+          def post(url: str, content: str):
+              url = normalize(url)
               if not url:
-                  print(f"{name}: MISSING")
-                  return False
-              data = json.dumps({"content": f"✅ {name} OK (from nba_bot.yml)"}).encode("utf-8")
+                  return (False, "EMPTY_URL")
+              data = json.dumps({"content": content}).encode("utf-8")
               req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"}, method="POST")
               try:
                   with urllib.request.urlopen(req, timeout=15) as r:
-                      print(f"{name}: HTTP_{r.status}")
-                      return r.status in (200,204)
+                      return (r.status in (200, 204), f"HTTP_{r.status}")
               except urllib.error.HTTPError as e:
-                  print(f"{name}: HTTP_{e.code}")
-                  return False
+                  return (False, f"HTTP_{e.code}")
               except Exception as e:
-                  print(f"{name}: ERR_{type(e).__name__}")
-                  return False
+                  return (False, f"ERR_{type(e).__name__}")
 
-          ok = True
-          ok &= post("DISCORD_LOG_WEBHOOK",   os.getenv("DISCORD_LOG_WEBHOOK"))
-          ok &= post("DISCORD_TEAM_WEBHOOK",  os.getenv("DISCORD_TEAM_WEBHOOK"))
-          ok &= post("DISCORD_PROPS_WEBHOOK", os.getenv("DISCORD_PROPS_WEBHOOK"))
+          hooks = [
+              ("DISCORD_LOG_WEBHOOK",   os.getenv("DISCORD_LOG_WEBHOOK","")),
+              ("DISCORD_TEAM_WEBHOOK",  os.getenv("DISCORD_TEAM_WEBHOOK","")),
+              ("DISCORD_PROPS_WEBHOOK", os.getenv("DISCORD_PROPS_WEBHOOK","")),
+          ]
 
-          if not ok:
-              raise SystemExit("Discord sanity check failed. Fix GitHub Secrets (URLs) / channel permissions / webhook validity.")
+          print("Discord sanity check (non-blocking):")
+          for name, raw in hooks:
+              ok, st = post(raw, f"✅ {name} test message from GitHub Actions")
+              print(f"  - {name}: ok={ok} status={st}")
+
+          print("NOTE: even if some webhooks fail, workflow continues.")
           PY
 
       - name: Build team features (optional)

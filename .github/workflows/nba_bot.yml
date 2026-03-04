@@ -2,7 +2,6 @@ name: NBA Bot
 
 on:
   schedule:
-    # 16:30 and 21:30 UTC (adjust if needed)
     - cron: "30 16 * * *"
     - cron: "30 21 * * *"
   workflow_dispatch:
@@ -20,7 +19,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Pre-check webhooks (no code)
+      # 0) Pre-check webhooks BEFORE checkout:
+      # - Accepts either a raw Discord URL OR a full JSON webhook object (with "url")
+      # - Sends a debug message if possible
+      # - NEVER fails the workflow (so the bot still runs)
+      - name: Pre-check webhooks (accept URL or JSON, non-blocking)
         env:
           DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
           DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
@@ -28,23 +31,48 @@ jobs:
         run: |
           python - <<'PY'
           import os, json, urllib.request
-          def post(url, content):
-              url=(url or '').strip()
+
+          def normalize(v: str) -> str:
+              v = (v or "").strip()
+              # Allow secrets to be either JSON blob or plain URL
+              if v.startswith("{"):
+                  try:
+                      v = json.loads(v).get("url","").strip()
+                  except Exception:
+                      pass
+              # Strip accidental wrapping quotes
+              if v.startswith('"') and v.endswith('"'):
+                  v = v[1:-1]
+              return v.strip()
+
+          def post(url: str, content: str) -> bool:
+              url = normalize(url)
               if not url:
                   return False
-              data=json.dumps({'content': content}).encode('utf-8')
-              req=urllib.request.Request(url, data=data, headers={'Content-Type':'application/json'}, method='POST')
+              data = json.dumps({"content": content}).encode("utf-8")
+              req = urllib.request.Request(
+                  url, data=data, headers={"Content-Type":"application/json"}, method="POST"
+              )
               try:
                   with urllib.request.urlopen(req, timeout=15) as r:
-                      return r.status in (200,204)
+                      return r.status in (200, 204)
               except Exception:
                   return False
-          ok_team=post(os.getenv('DISCORD_TEAM_WEBHOOK'), 'NBA BOT DEBUG: TEAM webhook OK (pre-checkout)')
-          ok_props=post(os.getenv('DISCORD_PROPS_WEBHOOK'), 'NBA BOT DEBUG: PROPS webhook OK (pre-checkout)')
-          ok_log=post(os.getenv('DISCORD_LOG_WEBHOOK'), 'NBA BOT DEBUG: workflow started (pre-checkout)')
+
+          team_raw  = os.getenv("DISCORD_TEAM_WEBHOOK","")
+          props_raw = os.getenv("DISCORD_PROPS_WEBHOOK","")
+          log_raw   = os.getenv("DISCORD_LOG_WEBHOOK","")
+
+          ok_team  = post(team_raw,  "NBA BOT DEBUG: TEAM webhook OK (pre-checkout)")
+          ok_props = post(props_raw, "NBA BOT DEBUG: PROPS webhook OK (pre-checkout)")
+          ok_log   = post(log_raw,   "NBA BOT DEBUG: workflow started (pre-checkout)")
+
           if not (ok_team and ok_props and ok_log):
-              raise SystemExit('Webhook pre-check failed: verify GitHub Secrets contain URL only')
-          print('webhooks ok')
+              print("⚠️ Webhook pre-check not fully OK (continuing anyway).")
+              # Print which ones failed without leaking secrets
+              print(f"TEAM_OK={ok_team} PROPS_OK={ok_props} LOG_OK={ok_log}")
+          else:
+              print("✅ Webhooks OK")
           PY
 
       - name: Checkout
@@ -58,20 +86,38 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # 1) Debug message after deps installed (non-blocking)
       - name: Debug (deps installed)
         env:
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
         run: |
           python - <<'PY'
           import os, json, urllib.request
-          url=(os.getenv('DISCORD_LOG_WEBHOOK') or '').strip()
-          if url:
-              data=json.dumps({'content':'NBA BOT DEBUG: deps installed, about to run main.py'}).encode('utf-8')
-              req=urllib.request.Request(url, data=data, headers={'Content-Type':'application/json'}, method='POST')
-              try:
-                  urllib.request.urlopen(req, timeout=15).read()
-              except Exception:
-                  pass
+
+          def normalize(v: str) -> str:
+              v = (v or "").strip()
+              if v.startswith("{"):
+                  try:
+                      import json as _json
+                      v = _json.loads(v).get("url","").strip()
+                  except Exception:
+                      pass
+              if v.startswith('"') and v.endswith('"'):
+                  v = v[1:-1]
+              return v.strip()
+
+          url = normalize(os.getenv("DISCORD_LOG_WEBHOOK",""))
+          if not url:
+              print("No DISCORD_LOG_WEBHOOK, skip debug post.")
+              raise SystemExit(0)
+
+          data = json.dumps({"content":"NBA BOT DEBUG: deps installed, about to run main.py"}).encode("utf-8")
+          req  = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"}, method="POST")
+          try:
+              urllib.request.urlopen(req, timeout=15).read()
+              print("Debug post OK")
+          except Exception as e:
+              print("Debug post failed (continuing):", repr(e))
           PY
 
       - name: Build team features (optional)

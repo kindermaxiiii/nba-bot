@@ -3,183 +3,272 @@ from __future__ import annotations
 
 import json
 import math
-import statistics
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from odds_api import fetch_odds_with_fallback
 from model_team import model_prob_for_team_market
+from model_props import prob_over_from_logs
 
 
-# -------------------------
-# Config
-# -------------------------
+def _median(xs: List[float]) -> Optional[float]:
+    xs = sorted([x for x in xs if x is not None])
+    if not xs:
+        return None
+    n = len(xs)
+    if n % 2 == 1:
+        return float(xs[n // 2])
+    return (float(xs[n // 2 - 1]) + float(xs[n // 2])) / 2.0
+
+
+def _imp(odds: float) -> float:
+    if odds <= 0:
+        return 0.0
+    return 1.0 / odds
+
+
+def _no_vig(pa: float, pb: float) -> Tuple[float, float]:
+    s = pa + pb
+    if s <= 0:
+        return 0.0, 0.0
+    return pa / s, pb / s
+
+
+def _clip(p_model: float, p_mkt: float, clip: float) -> float:
+    # calibration constraint: |p_real - p_mkt| <= clip
+    d = p_model - p_mkt
+    if d > clip:
+        return p_mkt + clip
+    if d < -clip:
+        return p_mkt - clip
+    return p_model
+
+
+def _haircut(p_real: float, p_mkt: float, edge_trigger: float, haircut_rate: float) -> Tuple[float, float]:
+    edge_raw = p_real - p_mkt
+    if edge_raw <= edge_trigger:
+        return p_real, edge_raw
+    # shrink towards market by haircut_rate
+    p_adj = p_mkt + (p_real - p_mkt) * (1.0 - haircut_rate)
+    return p_adj, (p_adj - p_mkt)
+
+
+def _dev(best: float, med: float) -> float:
+    if med <= 0:
+        return 0.0
+    return (best - med) / med
+
+
+def _score(edge: float, ev: float, dev: float) -> float:
+    # simple institutional score, capped
+    # edge up to 8% -> 60 pts, EV up to 6% -> 30 pts, dev up to 5% -> 10 pts
+    e = max(0.0, min(1.0, edge / 0.08)) * 60.0
+    v = max(0.0, min(1.0, ev / 0.06)) * 30.0
+    d = max(0.0, min(1.0, dev / 0.05)) * 10.0
+    return max(0.0, min(100.0, e + v + d))
+
+
+def _season_string(dt: datetime) -> str:
+    y, m = dt.year, dt.month
+    if m >= 10:
+        y1, y2 = y, y + 1
+    else:
+        y1, y2 = y - 1, y
+    return f"{y1}-{str(y2)[-2:]}"
+
 
 @dataclass
 class Config:
+    sport_key: str
     regions_priority: List[str]
-    markets: List[str]
+    team_markets: List[str]
+    prop_markets: List[str]
+    preferred_books: List[str]
 
-    # calibration / discipline
-    model_weight: float = 0.7          # blend after clipping for stability
-    clip_vs_market: float = 0.08       # max deviation allowed vs market
+    max_team_picks: int
+    max_prop_picks: int
+    max_ml_per_day: int
 
-    # user constraints
-    min_odds: float = 1.5
-    max_odds: float = 2.2
+    odds_min: float
+    odds_max: float
 
-    # portfolio constraints
-    max_ml_per_day: int = 1
-    max_odds_ml: float = 2.2
+    clip_vs_market: float
+    edge_min_strict: float
+    edge_min_fill: float
 
-    min_edge: float = 0.02
-    min_ev: float = 0.0
+    haircut_trigger: float
+    haircut_rate: float
+    edge_refuse: float
 
-    max_picks_team: int = 3
-    max_picks_props: int = 3
+    model_weight: float
 
-    # robustness controls
-    max_overround: float = 0.15
-    kelly_penalty_overround: float = 0.25  # applied when overround > 10%
+    props_last_n: int
+    props_min_games: int
+    props_blowout_penalty_spread: float
 
 
 def load_config(path: str) -> Config:
     with open(path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
+        j = json.load(f)
 
     return Config(
-        regions_priority=list(raw.get("regions_priority") or []),
-        markets=list(raw.get("markets") or []),
-        model_weight=float(raw.get("model_weight", 0.7)),
-        clip_vs_market=float(raw.get("clip_vs_market", 0.08)),
-        min_odds=float(raw.get("min_odds", 1.5)),
-        max_odds=float(raw.get("max_odds", 2.2)),
-        max_ml_per_day=int(raw.get("max_ml_per_day", 1)),
-        max_odds_ml=float(raw.get("max_odds_ml", 2.2)),
-        min_edge=float(raw.get("min_edge", 0.02)),
-        min_ev=float(raw.get("min_ev", 0.0)),
-        max_picks_team=int(raw.get("max_picks_team", 3)),
-        max_picks_props=int(raw.get("max_picks_props", 3)),
-        max_overround=float(raw.get("max_overround", 0.15)),
-        kelly_penalty_overround=float(raw.get("kelly_penalty_overround", 0.25)),
+        sport_key=j.get("sport_key", "basketball_nba"),
+        regions_priority=j.get("regions_priority", ["us", "eu", "uk"]),
+        team_markets=j.get("team_markets", ["spreads", "totals", "h2h"]),
+        prop_markets=j.get("prop_markets", []),
+        preferred_books=j.get("preferred_books", []),
+
+        max_team_picks=int(j.get("max_team_picks", 3)),
+        max_prop_picks=int(j.get("max_prop_picks", 3)),
+        max_ml_per_day=int(j.get("max_ml_per_day", 2)),
+
+        odds_min=float(j.get("odds_min", 1.5)),
+        odds_max=float(j.get("odds_max", 2.2)),
+
+        clip_vs_market=float(j.get("clip_vs_market", 0.08)),
+        edge_min_strict=float(j.get("edge_min_strict", 0.02)),
+        edge_min_fill=float(j.get("edge_min_fill", 0.0)),
+
+        haircut_trigger=float(j.get("haircut_trigger", 0.06)),
+        haircut_rate=float(j.get("haircut_rate", 0.30)),
+        edge_refuse=float(j.get("edge_refuse", 0.15)),
+
+        model_weight=float(j.get("model_weight", 1.0)),
+
+        props_last_n=int(j.get("props_last_n", 20)),
+        props_min_games=int(j.get("props_min_games", 8)),
+        props_blowout_penalty_spread=float(j.get("props_blowout_penalty_spread", 10.0)),
     )
 
 
-# -------------------------
-# Helpers
-# -------------------------
-
-
-def _clamp(x: float, lo: float = 0.01, hi: float = 0.99) -> float:
-    return max(lo, min(hi, float(x)))
-
-
-def _implied_prob(odds_decimal: float) -> Optional[float]:
+def _load_team_features() -> Dict[str, Dict[str, Any]]:
     try:
-        o = float(odds_decimal)
-        if o <= 1.0:
-            return None
-        return 1.0 / o
+        with open("data/team_features.json", "r", encoding="utf-8") as f:
+            return json.load(f) or {}
     except Exception:
-        return None
+        return {}
 
 
-def _median_or_none(xs: List[float]) -> Optional[float]:
-    xs = [float(x) for x in xs if x is not None]
-    if not xs:
-        return None
-    return float(statistics.median(xs))
+def _collect_two_way_market(game: Dict[str, Any], market_key: str) -> Dict[str, Any]:
+    """
+    Returns structure:
+      - for h2h: {"type":"h2h", "sides": {team:[odds...]}}
+      - for totals: {"type":"totals", "line": point, "sides": {"Over":[...], "Under":[...]}}
+      - for spreads: {"type":"spreads", "line": point_abs, "sides": {team:[(odds, point_signed)...]}}
+    """
+    home = game.get("home_team")
+    away = game.get("away_team")
+    bms = game.get("bookmakers") or []
+
+    if not isinstance(bms, list):
+        return {}
+
+    # count occurrences per line
+    line_counts: Dict[str, int] = {}
+    raw_by_line: Dict[str, Dict[str, List[Any]]] = {}
+
+    for bm in bms:
+        for m in (bm.get("markets") or []):
+            if m.get("key") != market_key:
+                continue
+            for o in (m.get("outcomes") or []):
+                name = o.get("name")
+                price = o.get("price")
+                point = o.get("point")
+                if name is None or price is None:
+                    continue
+
+                if market_key == "h2h":
+                    lk = "h2h"
+                    raw_by_line.setdefault(lk, {}).setdefault(str(name), []).append(float(price))
+                    line_counts[lk] = line_counts.get(lk, 0) + 1
+
+                elif market_key == "totals":
+                    if point is None:
+                        continue
+                    lk = str(float(point))
+                    raw_by_line.setdefault(lk, {}).setdefault(str(name), []).append(float(price))
+                    line_counts[lk] = line_counts.get(lk, 0) + 1
+
+                elif market_key == "spreads":
+                    if point is None:
+                        continue
+                    # normalize line by absolute value (consensus)
+                    lk = str(abs(float(point)))
+                    raw_by_line.setdefault(lk, {}).setdefault(str(name), []).append((float(price), float(point)))
+                    line_counts[lk] = line_counts.get(lk, 0) + 1
+
+    if not line_counts:
+        return {}
+
+    # consensus line = most occurrences
+    consensus = max(line_counts.items(), key=lambda kv: kv[1])[0]
+    sides = raw_by_line.get(consensus, {})
+
+    if market_key == "h2h":
+        return {"type": "h2h", "line": None, "home": home, "away": away, "sides": sides}
+
+    if market_key == "totals":
+        return {"type": "totals", "line": float(consensus), "home": home, "away": away, "sides": sides}
+
+    if market_key == "spreads":
+        return {"type": "spreads", "line": float(consensus), "home": home, "away": away, "sides": sides}
+
+    return {}
 
 
-def _mode_or_median(xs: List[float]) -> Optional[float]:
-    xs = [float(x) for x in xs if x is not None]
-    if not xs:
-        return None
-    # mode with tolerance (book lines can differ by 0.5)
-    buckets: Dict[float, int] = {}
-    for v in xs:
-        k = round(v * 2) / 2.0
-        buckets[k] = buckets.get(k, 0) + 1
-    best = max(buckets.items(), key=lambda kv: kv[1])[0]
-    return float(best)
+def _best_odds(game: Dict[str, Any], market_key: str, selection: str, line: Optional[float]) -> Tuple[Optional[float], Optional[str]]:
+    best = None
+    best_book = None
+    for bm in (game.get("bookmakers") or []):
+        title = bm.get("title") or bm.get("key") or "Unknown"
+        for m in (bm.get("markets") or []):
+            if m.get("key") != market_key:
+                continue
+            for o in (m.get("outcomes") or []):
+                if str(o.get("name")) != str(selection):
+                    continue
+                if market_key in ("totals", "spreads"):
+                    if o.get("point") is None:
+                        continue
+                    if line is None:
+                        continue
+                    # totals: exact point match; spreads: abs(point) match consensus
+                    if market_key == "totals" and float(o.get("point")) != float(line):
+                        continue
+                    if market_key == "spreads" and abs(float(o.get("point"))) != float(line):
+                        continue
+
+                price = o.get("price")
+                if price is None:
+                    continue
+                price = float(price)
+                if best is None or price > best:
+                    best = price
+                    best_book = str(title)
+    return best, best_book
 
 
-def _market_key_to_internal(market_key: str) -> Optional[str]:
-    k = (market_key or "").lower()
-    if k in ("h2h", "moneyline"):
-        return "MONEYLINE"
-    if k in ("spreads", "spread"):
-        return "SPREAD"
-    if k in ("totals", "total"):
-        return "TOTAL"
-    # 1H (OddsAPI naming varies)
-    if k in ("h2h_h1", "h2h_1h", "moneyline_h1"):
-        return "MONEYLINE 1H"
-    if k in ("spreads_h1", "spreads_1h"):
-        return "SPREAD 1H"
-    if k in ("totals_h1", "totals_1h"):
-        return "TOTAL 1H"
+def _spread_signed_point(game: Dict[str, Any], team: str, line_abs: float) -> Optional[float]:
+    # return the signed point for `team` at abs(point)==line_abs
+    for bm in (game.get("bookmakers") or []):
+        for m in (bm.get("markets") or []):
+            if m.get("key") != "spreads":
+                continue
+            for o in (m.get("outcomes") or []):
+                if str(o.get("name")) != str(team):
+                    continue
+                if o.get("point") is None:
+                    continue
+                if abs(float(o.get("point"))) != float(line_abs):
+                    continue
+                return float(o.get("point"))
     return None
 
 
-def _no_vig_two_way(p1: float, p2: float) -> Tuple[float, float, float]:
-    """Return (p1_nv, p2_nv, overround)."""
-    s = p1 + p2
-    if s <= 0:
-        return 0.5, 0.5, 0.0
-    return p1 / s, p2 / s, (s - 1.0)
-
-
-def _haircut_edge_ev(edge: float, ev: float) -> Tuple[float, float, List[str]]:
-    """Institutional haircuts on suspiciously large edges."""
-    reasons: List[str] = []
-    e = float(edge)
-    v = float(ev)
-
-    if e > 0.06:
-        reasons.append("haircut_edge>6%: -30%")
-        e *= 0.70
-        v *= 0.70
-    # if still very large, flag or refuse
-    if e > 0.10:
-        reasons.append("flag_edge>10%")
-    if e > 0.15:
-        reasons.append("refuse_edge>15%")
-    return e, v, reasons
-
-
-def _score_candidate(ev: float, edge: float, dev: float, overround: float, market: str) -> float:
-    # Prefer spreads/totals over ML by default ("logical" / less longshot)
-    market_bonus = 2.0 if market in ("SPREAD", "TOTAL", "SPREAD 1H", "TOTAL 1H") else 0.0
-    # Penalize dev and high overround
-    return (100.0 * ev) + (50.0 * edge) - (40.0 * dev) - (30.0 * max(0.0, overround)) + market_bonus
-
-
-# -------------------------
-# Loading team features
-# -------------------------
-
-
-def load_team_features(path: str = "data/team_features.json") -> Dict[str, Dict[str, Any]]:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return {str(k): (v if isinstance(v, dict) else {}) for k, v in data.items()}
-        return {}
-    except Exception:
-        return {}
-
-
-# -------------------------
-# Main engine
-# -------------------------
-
-
-def analyze_team_slate(games: List[Dict[str, Any]], cfg: Config) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    features = load_team_features("data/team_features.json")
-
-    candidates: List[Dict[str, Any]] = []
-    markets_tested = 0
+def _make_team_candidates(games: List[Dict[str, Any]], cfg: Config, features: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    cands: List[Dict[str, Any]] = []
 
     for g in games:
         home = g.get("home_team")
@@ -187,248 +276,424 @@ def analyze_team_slate(games: List[Dict[str, Any]], cfg: Config) -> Tuple[List[D
         if not home or not away:
             continue
 
-        bookmakers = g.get("bookmakers") or []
-        if not isinstance(bookmakers, list) or not bookmakers:
-            continue
+        match = f"{away} @ {home}"
 
-        # Collect quotes per market
-        for bm in bookmakers:
-            bm_title = bm.get("title") or bm.get("key") or "?"
-            for m in (bm.get("markets") or []):
-                mk = m.get("key")
-                internal = _market_key_to_internal(mk)
-                if internal is None:
-                    continue
-                if cfg.markets and mk not in cfg.markets:
-                    # only use markets requested in config
-                    continue
+        # PRIORITY: spreads -> totals -> h2h
+        for mk in ("spreads", "totals", "h2h"):
+            if mk not in cfg.team_markets:
+                continue
 
-                outcomes = m.get("outcomes") or []
-                if not isinstance(outcomes, list) or len(outcomes) < 2:
+            struct = _collect_two_way_market(g, mk)
+            if not struct:
+                continue
+
+            if mk == "h2h":
+                sides = struct["sides"]
+                if home not in sides or away not in sides:
                     continue
 
-                markets_tested += 1
-
-                # Parse two-way market probs (no-vig per book)
-                # OddsAPI gives decimal odds in "price".
-                # For spreads, each outcome has "point".
-                o1, o2 = outcomes[0], outcomes[1]
-                p1 = _implied_prob(o1.get("price"))
-                p2 = _implied_prob(o2.get("price"))
-                if p1 is None or p2 is None:
-                    continue
-                p1_nv, p2_nv, overround = _no_vig_two_way(p1, p2)
-
-                # Skip absurd overround markets
-                if overround > cfg.max_overround:
+                med_home = _median([float(x) for x in sides[home]])
+                med_away = _median([float(x) for x in sides[away]])
+                if med_home is None or med_away is None:
                     continue
 
-                # Add each side as a quote
-                for o, p_nv in ((o1, p1_nv), (o2, p2_nv)):
-                    sel = o.get("name")
-                    odds = o.get("price")
-                    line = o.get("point") if "point" in o else None
-                    if sel is None or odds is None:
+                pA, pB = _no_vig(_imp(med_home), _imp(med_away))
+                # p_mkt for each side
+                for team, med, p_mkt in [(home, med_home, pA), (away, med_away, pB)]:
+                    best, book = _best_odds(g, "h2h", team, None)
+                    if best is None or book is None:
+                        continue
+                    if not (cfg.odds_min <= best <= cfg.odds_max):
                         continue
 
-                    # Store quotes
-                    candidates.append(
-                        {
-                            "match": f"{away} @ {home}",
-                            "home_team": home,
-                            "away_team": away,
-                            "market_key": mk,
-                            "market": internal,
-                            "selection": sel,
-                            "line": line,
-                            "odds": float(odds),
-                            "book": str(bm_title),
-                            "p_mkt": float(p_nv),
-                            "overround": float(overround),
-                        }
-                    )
+                    p_model = model_prob_for_team_market("H2H", team, None, away, home, features)
+                    if p_model is None:
+                        continue
 
-    # If no candidates at all, return
-    if not candidates:
-        return [], {
-            "games": len(games),
-            "markets_tested": markets_tested,
-            "model_weight": cfg.model_weight,
-            "clip_vs_market": cfg.clip_vs_market,
-            "max_ml_per_day": cfg.max_ml_per_day,
-            "max_odds_ml": cfg.max_odds_ml,
-            "reason": "no_market_candidates",
-        }
+                    p_real = _clip(float(p_model), float(p_mkt), cfg.clip_vs_market)
+                    p_real, edge = _haircut(p_real, float(p_mkt), cfg.haircut_trigger, cfg.haircut_rate)
 
-    # Consensus line selection (avoid picking 1.01 mislines)
-    # For each (match, market, selection), pick most common line, then best odds for that line.
-    by_key: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
-    for c in candidates:
-        k = (c["match"], c["market"], c["selection"])
-        by_key.setdefault(k, []).append(c)
+                    if edge > cfg.edge_refuse:
+                        continue
 
-    best_quotes: List[Dict[str, Any]] = []
-    for (match, market, sel), qs in by_key.items():
-        lines = [q.get("line") for q in qs if q.get("line") is not None]
-        target_line = _mode_or_median(lines) if lines else None
+                    ev = p_real * best - 1.0
+                    if ev <= 0:
+                        continue
 
-        # Filter to target line when applicable
-        if target_line is not None:
-            qs2 = [q for q in qs if q.get("line") is not None and abs(float(q.get("line")) - float(target_line)) < 1e-9]
-            if qs2:
-                qs = qs2
+                    dev = _dev(best, float(med))
+                    sc = _score(edge, ev, dev)
 
-        # Best odds within allowed range
-        qs = sorted(qs, key=lambda x: float(x.get("odds", 0.0)), reverse=True)
-        picked = None
-        for q in qs:
-            o = float(q["odds"])
-            if o < cfg.min_odds or o > cfg.max_odds:
-                continue
-            # Additional ML guard
-            if q["market"] == "MONEYLINE" and o > cfg.max_odds_ml:
-                continue
-            picked = q
-            break
-        if picked:
-            best_quotes.append(picked)
+                    cands.append({
+                        "match": match,
+                        "market": "H2H",
+                        "selection": team,
+                        "line": None,
+                        "odds": float(best),
+                        "book": book,
+                        "p_model": float(p_model),
+                        "p_mkt": float(p_mkt),
+                        "fair_prob": float(p_real),
+                        "edge": float(edge),
+                        "ev": float(ev),
+                        "dev": float(dev),
+                        "score": float(sc),
+                        "why": f"Model vs no-vig market (clip±{cfg.clip_vs_market:.2f}, haircut>{cfg.haircut_trigger:.2f})."
+                    })
 
-    # Compute model probs and run discipline filters
-    final: List[Dict[str, Any]] = []
-    for q in best_quotes:
-        market = q["market"]
-        sel = q["selection"]
-        line = q.get("line")
-        home = q["home_team"]
-        away = q["away_team"]
+            if mk == "totals":
+                sides = struct["sides"]
+                line = struct["line"]
+                if "Over" not in sides or "Under" not in sides:
+                    continue
 
-        p_mkt = float(q["p_mkt"])
+                med_o = _median([float(x) for x in sides["Over"]])
+                med_u = _median([float(x) for x in sides["Under"]])
+                if med_o is None or med_u is None:
+                    continue
 
-        p_model_raw = model_prob_for_team_market(
-            market=market,
-            selection=sel,
-            line=float(line) if line is not None else None,
-            away_team=away,
-            home_team=home,
-            features=features,
-        )
-        if p_model_raw is None:
-            continue
-        p_model_raw = _clamp(float(p_model_raw))
+                pO, pU = _no_vig(_imp(med_o), _imp(med_u))
 
-        # Clip vs market
-        delta = p_model_raw - p_mkt
-        delta_clipped = max(-cfg.clip_vs_market, min(cfg.clip_vs_market, delta))
-        p_model = _clamp(p_mkt + delta_clipped)
+                for sel, med, p_mkt in [("Over", med_o, pO), ("Under", med_u, pU)]:
+                    best, book = _best_odds(g, "totals", sel, line)
+                    if best is None or book is None:
+                        continue
+                    if not (cfg.odds_min <= best <= cfg.odds_max):
+                        continue
 
-        # Final p_real (stabilized)
-        p_real = _clamp(cfg.model_weight * p_model + (1.0 - cfg.model_weight) * p_mkt)
+                    p_model = model_prob_for_team_market("TOTAL", sel, float(line), away, home, features)
+                    if p_model is None:
+                        continue
 
-        odds = float(q["odds"])
-        ev = p_real * odds - 1.0
-        edge = p_real - p_mkt
-        dev = abs(p_model_raw - p_mkt)
+                    p_real = _clip(float(p_model), float(p_mkt), cfg.clip_vs_market)
+                    p_real, edge = _haircut(p_real, float(p_mkt), cfg.haircut_trigger, cfg.haircut_rate)
+                    if edge > cfg.edge_refuse:
+                        continue
 
-        # Haircuts
-        edge2, ev2, haircut_reasons = _haircut_edge_ev(edge, ev)
-        if "refuse_edge>15%" in haircut_reasons:
-            continue
+                    ev = p_real * best - 1.0
+                    if ev <= 0:
+                        continue
 
-        # Base discipline filters
-        if ev2 < cfg.min_ev:
-            continue
-        if edge2 < cfg.min_edge:
-            continue
+                    dev = _dev(best, float(med))
+                    sc = _score(edge, ev, dev)
 
-        # Overround penalty on score
-        overround = float(q.get("overround", 0.0))
+                    cands.append({
+                        "match": match,
+                        "market": "TOTAL",
+                        "selection": sel,
+                        "line": float(line),
+                        "odds": float(best),
+                        "book": book,
+                        "p_model": float(p_model),
+                        "p_mkt": float(p_mkt),
+                        "fair_prob": float(p_real),
+                        "edge": float(edge),
+                        "ev": float(ev),
+                        "dev": float(dev),
+                        "score": float(sc),
+                        "why": f"Expected total vs line (calibrated to market no-vig)."
+                    })
 
-        score = _score_candidate(ev2, edge2, dev, overround, market)
+            if mk == "spreads":
+                sides = struct["sides"]
+                line_abs = struct["line"]
+                if home not in sides or away not in sides:
+                    continue
 
-        final.append(
-            {
-                "match": q["match"],
-                "market": market if market != "MONEYLINE" else "H2H",  # display friendly
-                "selection": sel,
-                "line": float(line) if line is not None else None,
-                "odds": odds,
-                "book": q["book"],
-                "p_model": p_model,
-                "p_mkt": p_mkt,
-                "fair_prob": p_real,
-                "ev": ev2,
-                "edge": edge2,
-                "dev": dev,
-                "overround": overround,
-                "haircuts": haircut_reasons,
-                "score": score,
-            }
-        )
+                # med odds per team
+                med_home = _median([float(x[0]) for x in sides[home]])
+                med_away = _median([float(x[0]) for x in sides[away]])
+                if med_home is None or med_away is None:
+                    continue
 
-    # Deduplicate by match+market+selection; keep best score
-    uniq: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-    for p in final:
-        k = (p["match"], p["market"], p["selection"])
-        if k not in uniq or float(p["score"]) > float(uniq[k]["score"]):
-            uniq[k] = p
-    final = list(uniq.values())
+                pH, pA = _no_vig(_imp(med_home), _imp(med_away))
 
-    # Sort by score descending
-    final.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
+                for team, med, p_mkt in [(home, med_home, pH), (away, med_away, pA)]:
+                    best, book = _best_odds(g, "spreads", team, line_abs)
+                    if best is None or book is None:
+                        continue
+                    if not (cfg.odds_min <= best <= cfg.odds_max):
+                        continue
 
-    # Portfolio construction: 1 pick per match, prefer non-ML, cap ML count
-    picks: List[Dict[str, Any]] = []
-    used_matches: set[str] = set()
+                    signed = _spread_signed_point(g, team, line_abs)
+                    if signed is None:
+                        continue
+
+                    p_model = model_prob_for_team_market("SPREAD", team, float(signed), away, home, features)
+                    if p_model is None:
+                        continue
+
+                    p_real = _clip(float(p_model), float(p_mkt), cfg.clip_vs_market)
+                    p_real, edge = _haircut(p_real, float(p_mkt), cfg.haircut_trigger, cfg.haircut_rate)
+                    if edge > cfg.edge_refuse:
+                        continue
+
+                    ev = p_real * best - 1.0
+                    if ev <= 0:
+                        continue
+
+                    dev = _dev(best, float(med))
+                    sc = _score(edge, ev, dev)
+
+                    cands.append({
+                        "match": match,
+                        "market": "SPREAD",
+                        "selection": team,
+                        "line": float(signed),
+                        "odds": float(best),
+                        "book": book,
+                        "p_model": float(p_model),
+                        "p_mkt": float(p_mkt),
+                        "fair_prob": float(p_real),
+                        "edge": float(edge),
+                        "ev": float(ev),
+                        "dev": float(dev),
+                        "score": float(sc),
+                        "why": "Margin model (net rating + home adv) vs spread line."
+                    })
+
+    return cands
+
+
+def _diversify_team(cands: List[Dict[str, Any]], cfg: Config) -> List[Dict[str, Any]]:
+    # rank by score desc
+    cands = sorted(cands, key=lambda x: (x["score"], x["edge"], x["ev"]), reverse=True)
+
+    picked: List[Dict[str, Any]] = []
+    used_matches = set()
     ml_count = 0
 
-    # First pass: non-ML
-    for p in final:
-        if len(picks) >= cfg.max_picks_team:
-            break
-        if p["match"] in used_matches:
-            continue
-        if p["market"] == "H2H":
-            continue
-        picks.append(p)
-        used_matches.add(p["match"])
-
-    # Second pass: ML (only if still short)
-    if len(picks) < cfg.max_picks_team:
-        for p in final:
-            if len(picks) >= cfg.max_picks_team:
+    # strict pass first
+    for tier_edge in (cfg.edge_min_strict, cfg.edge_min_fill):
+        for c in cands:
+            if len(picked) >= cfg.max_team_picks:
                 break
-            if p["match"] in used_matches:
+            if c["match"] in used_matches:
                 continue
-            if p["market"] != "H2H":
+            if c["market"] == "H2H":
+                if ml_count >= cfg.max_ml_per_day:
+                    continue
+            if c["edge"] < tier_edge:
                 continue
-            if ml_count >= cfg.max_ml_per_day:
+
+            picked.append(c)
+            used_matches.add(c["match"])
+            if c["market"] == "H2H":
+                ml_count += 1
+
+        if len(picked) >= cfg.max_team_picks:
+            break
+
+    return picked
+
+
+def _fetch_props(cfg: Config) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if not cfg.prop_markets:
+        return [], {"note": "no prop_markets in config"}
+
+    games, meta = fetch_odds_with_fallback(
+        sport_key=cfg.sport_key,
+        markets=cfg.prop_markets,
+        regions_priority=cfg.regions_priority,
+        preferred_books=cfg.preferred_books,
+    )
+    return games, meta
+
+
+def _make_prop_candidates(cfg: Config, props_games: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Evaluate player props using nba_api game logs (stat-only), then clip/haircut vs market.
+    """
+    cands: List[Dict[str, Any]] = []
+    season = _season_string(datetime.now(timezone.utc))
+
+    # Helper to compute consensus spread for blowout penalty per match (if present in same game object)
+    def consensus_spread_abs(g: Dict[str, Any]) -> Optional[float]:
+        struct = _collect_two_way_market(g, "spreads")
+        if not struct:
+            return None
+        return float(struct["line"])
+
+    for g in props_games:
+        home = g.get("home_team")
+        away = g.get("away_team")
+        if not home or not away:
+            continue
+        match = f"{away} @ {home}"
+
+        blowout_abs = consensus_spread_abs(g)
+
+        for bm in (g.get("bookmakers") or []):
+            for m in (bm.get("markets") or []):
+                mk = m.get("key")
+                if mk not in cfg.prop_markets:
+                    continue
+
+                # OddsAPI props format: name=Over/Under, description=player, point=line
+                # group by (player,line)
+                groups: Dict[Tuple[str, float], Dict[str, List[float]]] = {}
+                best_by_side: Dict[Tuple[str, float, str], Tuple[float, str]] = {}
+
+                for o in (m.get("outcomes") or []):
+                    side = o.get("name")
+                    player = o.get("description") or o.get("participant") or o.get("player")
+                    price = o.get("price")
+                    line = o.get("point")
+
+                    if not side or not player or price is None or line is None:
+                        continue
+                    side = str(side)
+                    player = str(player).strip()
+                    line = float(line)
+                    price = float(price)
+
+                    if side not in ("Over", "Under"):
+                        continue
+
+                    groups.setdefault((player, line), {}).setdefault(side, []).append(price)
+
+                    key = (player, line, side)
+                    cur = best_by_side.get(key)
+                    if cur is None or price > cur[0]:
+                        best_by_side[key] = (price, bm.get("title") or bm.get("key") or "Unknown")
+
+                # evaluate groups
+                for (player, line), sides in groups.items():
+                    if "Over" not in sides or "Under" not in sides:
+                        continue
+
+                    med_o = _median(sides["Over"])
+                    med_u = _median(sides["Under"])
+                    if med_o is None or med_u is None:
+                        continue
+
+                    pO, pU = _no_vig(_imp(med_o), _imp(med_u))
+
+                    # map prop market to stat field
+                    if mk == "player_points":
+                        stat = "PTS"
+                    elif mk == "player_rebounds":
+                        stat = "REB"
+                    elif mk == "player_assists":
+                        stat = "AST"
+                    elif mk == "player_points_rebounds_assists":
+                        stat = "PRA"
+                    else:
+                        continue
+
+                    # model from nba_api logs (stat-only)
+                    info = prob_over_from_logs(
+                        player_name=player,
+                        stat=stat,
+                        line=line,
+                        season=season,
+                        last_n=cfg.props_last_n,
+                        min_games=cfg.props_min_games,
+                    )
+                    if not info:
+                        continue
+
+                    p_model_over = float(info["p_over"])
+                    # blowout penalty for props if spread huge
+                    if blowout_abs is not None and blowout_abs >= cfg.props_blowout_penalty_spread:
+                        # penalize towards 0.5 a bit
+                        p_model_over = 0.5 + (p_model_over - 0.5) * 0.85
+
+                    for side, med, p_mkt, p_model in [
+                        ("Over", med_o, pO, p_model_over),
+                        ("Under", med_u, pU, 1.0 - p_model_over),
+                    ]:
+                        best_tuple = best_by_side.get((player, line, side))
+                        if not best_tuple:
+                            continue
+                        best, book = best_tuple
+
+                        if not (cfg.odds_min <= best <= cfg.odds_max):
+                            continue
+
+                        p_real = _clip(float(p_model), float(p_mkt), cfg.clip_vs_market)
+                        p_real, edge = _haircut(p_real, float(p_mkt), cfg.haircut_trigger, cfg.haircut_rate)
+                        if edge > cfg.edge_refuse:
+                            continue
+
+                        ev = p_real * best - 1.0
+                        if ev <= 0:
+                            continue
+
+                        dev = _dev(best, float(med))
+                        sc = _score(edge, ev, dev)
+
+                        cands.append({
+                            "match": match,
+                            "market": mk,
+                            "selection": f"{player} {side}",
+                            "player": player,
+                            "line": float(line),
+                            "odds": float(best),
+                            "book": str(book),
+                            "p_model": float(p_model),
+                            "p_mkt": float(p_mkt),
+                            "fair_prob": float(p_real),
+                            "edge": float(edge),
+                            "ev": float(ev),
+                            "dev": float(dev),
+                            "score": float(sc),
+                            "why": f"Stat-only ({stat}) last{info['games_used']} games. avg_min={info.get('avg_min')}"
+                        })
+
+    return cands
+
+
+def _diversify_props(cands: List[Dict[str, Any]], cfg: Config) -> List[Dict[str, Any]]:
+    cands = sorted(cands, key=lambda x: (x["score"], x["edge"], x["ev"]), reverse=True)
+
+    picked: List[Dict[str, Any]] = []
+    used_players = set()
+
+    for tier_edge in (cfg.edge_min_strict, cfg.edge_min_fill):
+        for c in cands:
+            if len(picked) >= cfg.max_prop_picks:
+                break
+            pl = c.get("player")
+            if pl and pl in used_players:
                 continue
-            if float(p["odds"]) > cfg.max_odds_ml:
+            if c["edge"] < tier_edge:
                 continue
-            picks.append(p)
-            used_matches.add(p["match"])
-            ml_count += 1
+
+            picked.append(c)
+            if pl:
+                used_players.add(pl)
+
+        if len(picked) >= cfg.max_prop_picks:
+            break
+
+    return picked
+
+
+def run_engine(team_games: List[Dict[str, Any]], cfg: Config) -> Dict[str, Any]:
+    features = _load_team_features()
+
+    team_cands = _make_team_candidates(team_games, cfg, features)
+    team_picks = _diversify_team(team_cands, cfg)
+
+    # props fetch separately
+    props_games, meta_props = _fetch_props(cfg)
+    prop_picks: List[Dict[str, Any]] = []
+    props_note = None
+    if props_games:
+        prop_cands = _make_prop_candidates(cfg, props_games)
+        prop_picks = _diversify_props(prop_cands, cfg)
+    else:
+        props_note = meta_props.get("error") or "props unavailable (plan/markets/region)"
 
     meta = {
-        "games": len(games),
-        "markets_tested": markets_tested,
+        "games": len(team_games),
+        "markets_tested": len(team_cands),
         "model_weight": cfg.model_weight,
         "clip_vs_market": cfg.clip_vs_market,
         "max_ml_per_day": cfg.max_ml_per_day,
-        "max_odds_ml": cfg.max_odds_ml,
-        "min_odds": cfg.min_odds,
-        "max_odds": cfg.max_odds,
-        "min_edge": cfg.min_edge,
-        "min_ev": cfg.min_ev,
+        "max_odds_ml": cfg.odds_max,
+        "props_games": len(props_games) if props_games else 0,
+        "props_note": props_note,
     }
 
-    return picks, meta
-
-
-def run_engine(games: List[Dict[str, Any]], cfg: Config) -> Dict[str, Any]:
-    team_picks, meta = analyze_team_slate(games, cfg)
-
-    # Props not implemented yet (depends on available props markets / player model ingest)
-    prop_picks: List[Dict[str, Any]] = []
-
-    return {"team_picks": team_picks, "prop_picks": prop_picks, "meta": meta}
+    return {"meta": meta, "team_picks": team_picks, "prop_picks": prop_picks}

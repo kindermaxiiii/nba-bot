@@ -1,61 +1,47 @@
+# formatting.py
+from __future__ import annotations
+
 from typing import Any, Dict, List
+from utils import pct
 
 
-def _pct(x: float) -> str:
-    try:
-        return f"{float(x) * 100:.2f}%"
-    except Exception:
-        return "n/a"
-
-
-def _money(x: float) -> str:
-    try:
-        return f"{float(x):.2f}€"
-    except Exception:
-        return "n/a"
-
-
-def format_team_pick(p: Dict[str, Any], stake: float, daily_budget: float, spent_after: float, max_ml: int, one_pick_per_match: bool) -> str:
-    line_txt = f"{p.get('line')}" if p.get("line") is not None else "None"
+def _fmt_pick(i: int, p: Dict[str, Any]) -> str:
     return (
-        f"✅ NBA TEAM BET\n"
-        f"Match: {p.get('match')}\n"
-        f"Marché: {p.get('market')}\n"
-        f"Line: {line_txt}\n"
-        f"Sélection: {p.get('selection')}\n"
-        f"Best: {p.get('odds'):.2f} ({p.get('book')})\n"
-        f"Books utilisés (médiane): {p.get('books_used')} | Cote médiane: {p.get('median_odds'):.2f}\n"
-        f"p_real: {_pct(p.get('p_real', 0.0))} | p_mkt: {_pct(p.get('p_mkt', 0.0))}\n"
-        f"EV: {_pct(p.get('ev', 0.0))} | Edge: {_pct(p.get('edge', 0.0))} | Dev vs médiane: {_pct(p.get('dev', 0.0))}\n"
-        f"Mise (budget jour): {_pct(stake / daily_budget) if daily_budget > 0 else 'n/a'} BK ({_money(stake)})\n"
-        f"Budget jour: {_money(daily_budget)} | Utilisé après bet: {_money(spent_after)}\n"
-        f"Diversification: max {max_ml} ML si possible | 1 pick/match: {str(one_pick_per_match)}"
+        f"#{i} — {p['match']}\n"
+        f"Market: **{p['market']}**\n"
+        f"Pick: **{p['selection']} @ {p['odds']:.2f}** ({p['book']})\n"
+        f"p_model: {pct(p['p_model'])} | p_mkt: {pct(p['p_mkt'])} | p_real: {pct(p['p_real'])}\n"
+        f"EV: {pct(p['ev'])} | Edge: {pct(p['edge'])} | Dev: {pct(p['dev'])} | Score: {p['score']:.1f}/100\n"
+        f"Why: {p.get('why','')}\n"
     )
 
 
-def format_prop_pick(p: Dict[str, Any], stake: float, daily_budget: float, spent_after: float) -> str:
-    line_txt = f"{p.get('line')}" if p.get("line") is not None else "None"
-    sel = f"{p.get('player')} — {p.get('selection')} {line_txt}"
-    return (
-        f"✅ NBA PLAYER PROP\n"
-        f"Match: {p.get('match')}\n"
-        f"Marché: {p.get('market')}\n"
-        f"Sélection: {sel}\n"
-        f"Best: {p.get('odds'):.2f} ({p.get('book')})\n"
-        f"Books utilisés (médiane): {p.get('books_used')} | Cote médiane: {p.get('median_odds'):.2f}\n"
-        f"p_real: {_pct(p.get('p_real', 0.0))} | p_mkt: {_pct(p.get('p_mkt', 0.0))}\n"
-        f"EV: {_pct(p.get('ev', 0.0))} | Edge: {_pct(p.get('edge', 0.0))} | Dev vs médiane: {_pct(p.get('dev', 0.0))}\n"
-        f"Mise (budget jour): {_pct(stake / daily_budget) if daily_budget > 0 else 'n/a'} BK ({_money(stake)})\n"
-        f"Budget jour: {_money(daily_budget)} | Utilisé après bet: {_money(spent_after)}\n"
-        f"Props: 1 pick par joueur & 1 pick par match (si possible)"
-    )
+def format_team_message(picks: List[Dict[str, Any]]) -> str:
+    if not picks:
+        return "NBA — TOP 3 TEAM\nAucun pick (EV>=0 introuvable après filtre modèle + discipline)."
+    lines = ["NBA — TOP 3 TEAM\n"]
+    for i, p in enumerate(picks, 1):
+        lines.append(_fmt_pick(i, p))
+    return "\n".join(lines).strip()
 
 
-def format_no_bet(reason: str, daily_budget: float, matches_analyzed: int, markets_tested: int) -> str:
-    return (
-        f"❌ NBA NO BET LOG\n\n"
-        f"Raison: {reason}\n\n"
-        f"Matchs analysés: {matches_analyzed}\n"
-        f"Marchés testés: {markets_tested}\n\n"
-        f"Budget jour: {_money(daily_budget)}"
-    )
+def format_props_message(picks: List[Dict[str, Any]], note: str | None = None) -> str:
+    if not picks:
+        msg = "NBA — TOP 3 PROPS\nAucun pick."
+        if note:
+            msg += f"\n({note})"
+        return msg
+    lines = ["NBA — TOP 3 PROPS\n"]
+    for i, p in enumerate(picks, 1):
+        lines.append(_fmt_pick(i, p))
+    if note:
+        lines.append(f"Note: {note}")
+    return "\n".join(lines).strip()
+
+
+def meta_embed(meta: Dict[str, Any]) -> Dict[str, Any]:
+    # Discord embed payload
+    desc = []
+    for k, v in meta.items():
+        desc.append(f"**{k}**: {v}")
+    return {"title": "NBA BOT — META", "description": "\n".join(desc)[:3900]}

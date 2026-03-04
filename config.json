@@ -1,10 +1,32 @@
 {
   "sport_key": "basketball_nba",
-  "regions_priority": ["us", "eu", "uk", "au"],
-  "markets": ["h2h", "spreads", "totals"],
-  "preferred_books": ["fanduel", "draftkings", "betmgm", "caesars", "bovada"],
-  "model_weight": 0.7,
-  "clip_vs_market": 0.08,
+  "regions_priority": ["us", "us2", "eu", "uk", "au"],
+
+  "team_markets": ["spreads", "totals", "h2h"],
+  "prop_markets": ["player_points", "player_rebounds", "player_assists", "player_points_rebounds_assists"],
+
+  "preferred_books": ["fanduel", "draftkings", "betmgm", "caesars", "betrivers", "bovada", "betonlineag", "lowvig"],
+
+  "max_team_picks": 3,
+  "max_prop_picks": 3,
+
   "max_ml_per_day": 2,
-  "max_odds_ml": 2.2
+
+  "odds_min": 1.50,
+  "odds_max": 2.20,
+
+  "clip_vs_market": 0.08,
+  "edge_min_strict": 0.02,
+  "edge_min_fill": 0.00,
+
+  "haircut_trigger": 0.06,
+  "haircut_rate": 0.30,
+
+  "edge_refuse": 0.15,
+
+  "model_weight": 1.00,
+
+  "props_last_n": 20,
+  "props_min_games": 8,
+  "props_blowout_penalty_spread": 10.0
 }

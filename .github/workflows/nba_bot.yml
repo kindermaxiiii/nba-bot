@@ -1,44 +1,23 @@
-name: NBA Bot (DEBUG WEBHOOKS)
+name: NBA Bot
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "30 16 * * *"
+    - cron: "30 21 * * *"
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: nba-bot-main
+  cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
-      - name: DEBUG 0 — Ping LOG/TEAM/PROPS (pre-checkout)
-        env:
-          LOG_URL: ${{ secrets.DISCORD_LOG_WEBHOOK }}
-          TEAM_URL: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
-          PROPS_URL: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
-        run: |
-          set -e
-          echo "LOG_URL length: ${#LOG_URL}"
-          echo "TEAM_URL length: ${#TEAM_URL}"
-          echo "PROPS_URL length: ${#PROPS_URL}"
-
-          if [ -z "$LOG_URL" ]; then echo "DISCORD_LOG_WEBHOOK empty"; exit 1; fi
-          if [ -z "$TEAM_URL" ]; then echo "DISCORD_TEAM_WEBHOOK empty"; exit 1; fi
-          if [ -z "$PROPS_URL" ]; then echo "DISCORD_PROPS_WEBHOOK empty"; exit 1; fi
-
-          code=$(curl -s -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" \
-            -d '{"content":"🟦 DEBUG: LOG webhook OK (pre-checkout)"}' "$LOG_URL")
-          echo "LOG HTTP=$code (expected 204)"
-
-          code=$(curl -s -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" \
-            -d '{"content":"🟦 DEBUG: TEAM webhook OK (pre-checkout)"}' "$TEAM_URL")
-          echo "TEAM HTTP=$code (expected 204)"
-
-          code=$(curl -s -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" \
-            -d '{"content":"🟦 DEBUG: PROPS webhook OK (pre-checkout)"}' "$PROPS_URL")
-          echo "PROPS HTTP=$code (expected 204)"
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -48,18 +27,22 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: DEBUG 1 — Ping LOG (post-install)
-        env:
-          LOG_URL: ${{ secrets.DISCORD_LOG_WEBHOOK }}
         run: |
-          set -e
-          code=$(curl -s -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" \
-            -d '{"content":"🟩 DEBUG: deps installed, about to run main.py"}' "$LOG_URL")
-          echo "LOG HTTP=$code (expected 204)"
+          python -V
+          pip install -r requirements.txt
 
-      - name: Run bot (main.py)
+      - name: Show repo files (debug)
+        run: |
+          ls -la
+          ls -la data || true
+
+      - name: Build team features (optional)
+        env:
+          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
+        run: |
+          python -u build_team_features.py || echo "build_team_features.py failed (continuing)"
+
+      - name: Run bot
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
@@ -67,5 +50,4 @@ jobs:
           DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
         run: |
-          set -e
           python -u main.py

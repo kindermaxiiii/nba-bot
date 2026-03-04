@@ -1,77 +1,55 @@
+# build_team_features.py
+from __future__ import annotations
+
 import json
 import os
 from datetime import datetime, timezone
-import requests
+from typing import Any, Dict
 
-OUT_PATH = "data/team_features.json"
-BASE_URL = "https://api.balldontlie.io/nba/v1/teams"
-
-
-def fetch_all_teams():
-    api_key = os.environ.get("BALLDONTLIE_API_KEY")
-
-    if not api_key:
-        raise RuntimeError("BALLDONTLIE_API_KEY is missing.")
-
-    headers = {
-        "Authorization": api_key,  # IMPORTANT: pas de Bearer
-        "Accept": "application/json",
-    }
-
-    teams = []
-    cursor = None
-
-    while True:
-        params = {}
-        if cursor:
-            params["cursor"] = cursor
-
-        r = requests.get(BASE_URL, headers=headers, params=params, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-
-        teams.extend(data.get("data", []))
-
-        meta = data.get("meta", {})
-        cursor = meta.get("next_cursor")
-        if not cursor:
-            break
-
-    return teams
+from nba_api.stats.endpoints import leaguedashteamstats
 
 
-def main():
-    print("Fetching teams from balldontlie (NBA v1)...")
+def _season_string(dt: datetime) -> str:
+    y = dt.year
+    m = dt.month
+    if m >= 10:
+        y1, y2 = y, y + 1
+    else:
+        y1, y2 = y - 1, y
+    return f"{y1}-{str(y2)[-2:]}"
 
-    teams = fetch_all_teams()
 
-    out = {
-        "updated_utc": datetime.now(timezone.utc).isoformat(),
-        "by_team_name": {},
-    }
-
-    for t in teams:
-        name = (t.get("full_name") or "").strip()
-        if not name:
-            continue
-
-        out["by_team_name"][name] = {
-            "team_name": name,
-            "team_id": t.get("id"),
-            "abbreviation": t.get("abbreviation"),
-            "games": None,
-            "pace": None,
-            "off_rtg": None,
-            "def_rtg": None,
-            "net_rtg": None,
-        }
-
+def main() -> None:
     os.makedirs("data", exist_ok=True)
+    season = _season_string(datetime.now(timezone.utc))
 
-    with open(OUT_PATH, "w", encoding="utf-8") as f:
-        json.dump(out, f, indent=2, ensure_ascii=False)
+    out: Dict[str, Dict[str, Any]] = {}
 
-    print(f"Saved {len(out['by_team_name'])} NBA teams.")
+    try:
+        df = leaguedashteamstats.LeagueDashTeamStats(
+            season=season,
+            per_mode_detailed="Per100Possessions"
+        ).get_data_frames()[0]
+
+        # Columns typically include: TEAM_NAME, OFF_RATING, DEF_RATING, NET_RATING, PACE
+        for _, r in df.iterrows():
+            name = str(r.get("TEAM_NAME"))
+            out[name] = {
+                "ortg": float(r.get("OFF_RATING")) if r.get("OFF_RATING") is not None else None,
+                "drtg": float(r.get("DEF_RATING")) if r.get("DEF_RATING") is not None else None,
+                "net_rating": float(r.get("NET_RATING")) if r.get("NET_RATING") is not None else None,
+                "pace": float(r.get("PACE")) if r.get("PACE") is not None else None,
+            }
+
+        with open("data/team_features.json", "w", encoding="utf-8") as f:
+            json.dump(out, f, indent=2, ensure_ascii=False)
+
+        print(f"Saved team_features.json for season {season} with {len(out)} teams.")
+    except Exception as e:
+        # fallback: still write an empty file so the bot doesn't crash
+        with open("data/team_features.json", "w", encoding="utf-8") as f:
+            json.dump({}, f, indent=2, ensure_ascii=False)
+        print("Failed to build team features:", repr(e))
 
 
 if __name__ == "__main__":

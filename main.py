@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import traceback
 from typing import Any, Dict, List, Optional
 
 from context import post_discord_team, post_discord_props, post_discord_log
@@ -15,39 +14,7 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     v = os.getenv(name)
     if v is None or str(v).strip() == "":
         return default
-    return v
-
-
-def _flatten_games(obj: Any) -> List[Dict[str, Any]]:
-    """
-    odds_api.fetch_odds_with_fallback can return:
-    - List[Dict] (ideal)
-    - List[List[Dict]] (one list per region)
-    - Dict with "data" holding list(s)
-    We convert everything to List[Dict].
-    """
-    out: List[Dict[str, Any]] = []
-
-    def rec(x: Any) -> None:
-        if x is None:
-            return
-        if isinstance(x, dict):
-            if "data" in x:
-                rec(x["data"])
-                return
-            if "home_team" in x and "away_team" in x:
-                out.append(x)
-                return
-            for v in x.values():
-                rec(v)
-            return
-        if isinstance(x, list):
-            for it in x:
-                rec(it)
-            return
-
-    rec(obj)
-    return out
+    return str(v).strip()
 
 
 def _discord_embed_top(title: str, picks: List[Dict[str, Any]], color: int = 3066993) -> Dict[str, Any]:
@@ -73,14 +40,20 @@ def _discord_embed_top(title: str, picks: List[Dict[str, Any]], color: int = 306
 
         p_model = p.get("p_model")
         p_mkt = p.get("p_mkt")
-        p_real = p.get("fair_prob")  # fair_prob = p_real final
+        p_real = p.get("fair_prob")  # chez toi fair_prob = p_real final
+
+        def pct(x: Any) -> str:
+            try:
+                return f"{float(x) * 100:.2f}%"
+            except Exception:
+                return "?"
 
         ev = p.get("ev")
         edge = p.get("edge")
         dev = p.get("dev")
         score = p.get("score")
 
-        def pct(x: Any) -> str:
+        def pct2(x: Any) -> str:
             try:
                 return f"{float(x) * 100:.2f}%"
             except Exception:
@@ -97,63 +70,61 @@ def _discord_embed_top(title: str, picks: List[Dict[str, Any]], color: int = 306
             f"Market: **{market}**{line_s}\n"
             f"Pick: **{selection}** @ **{odds_s}** ({book})\n"
             f"p_model: {pct(p_model)} | p_mkt: {pct(p_mkt)} | p_real: {pct(p_real)}\n"
-            f"EV: {pct(ev)} | Edge: {pct(edge)} | Dev: {pct(dev)} | Score: {num(score)}/100\n"
+            f"EV: {pct2(ev)} | Edge: {pct2(edge)} | Dev: {pct2(dev)} | Score: {num(score)}/100\n"
         )
 
     return {"title": title, "description": "\n".join(lines), "color": color}
 
 
-def _preview(raw_games: Any, n_chars: int = 900) -> str:
-    try:
-        s = json.dumps(raw_games, ensure_ascii=False)
-    except Exception:
-        s = repr(raw_games)
-    return s[:n_chars]
-
-
 def main() -> None:
-    # Always ping LOG at start (proves the workflow reached Python)
-    post_discord_log(content="NBA BOT: main.py started ✅")
-
     cfg = load_config("config.json")
 
-    # 1) Check Odds API key
+    # 0) quick discord start ping (LOG only)
+    try:
+        post_discord_log(content="NBA BOT: main.py started ✅")
+    except Exception as e:
+        # Do not crash on Discord, but print clearly
+        print(f"❌ Discord LOG send failed: {repr(e)}")
+
+    # 1) Check API key (OddsAPI)
     api_key = _env("ODDS_API_KEY")
     if not api_key:
         msg = "❌ ODDS_API_KEY manquante dans les Secrets GitHub."
-        post_discord_log(content=msg)
-        # Also notify other channels so you see it even if LOG channel muted
-        post_discord_team(content=msg)
-        post_discord_props(content=msg)
+        try:
+            post_discord_log(content=msg)
+        except Exception as e:
+            print(f"❌ Discord LOG send failed: {repr(e)}")
         print(msg)
         return
 
-    # 2) Fetch games
+    # 2) Fetch games (AUTO SLATE) + fallback regions + fallback books
+    # preferred_books optional: if in config, use it, else None
+    preferred_books = getattr(cfg, "preferred_books", None)
     try:
-        raw_games = fetch_odds_with_fallback(
+        games = fetch_odds_with_fallback(
             markets=cfg.markets,
             regions_priority=cfg.regions_priority,
+            sport_key=getattr(cfg, "sport_key", "basketball_nba"),
+            preferred_books=preferred_books,
         )
     except Exception as e:
         msg = f"❌ Erreur fetch OddsAPI: {repr(e)}"
-        post_discord_log(content=msg + "\n" + traceback.format_exc()[:1500])
-        post_discord_team(content=msg)
-        post_discord_props(content=msg)
+        try:
+            post_discord_log(content=msg)
+        except Exception as ee:
+            print(f"❌ Discord LOG send failed: {repr(ee)}")
         print(msg)
         return
 
-    games = _flatten_games(raw_games)
-
     if not games:
         msg = (
-            "❌ Aucun match reçu depuis OddsAPI (games vide après flatten).\n"
-            "Vérifie: ODDS_API_KEY / régions / quota / marchés.\n\n"
-            f"type(raw)={type(raw_games).__name__}\n"
-            f"preview(raw)={_preview(raw_games)}"
+            "❌ Aucun match reçu depuis OddsAPI (games vide).\n"
+            "Vérifie: ODDS_API_KEY / régions / quota / marchés.\n"
         )
-        post_discord_log(content=msg)
-        post_discord_team(content="NBA — Aucun match reçu (voir channel LOG).")
-        post_discord_props(content="NBA — Aucun match reçu (voir channel LOG).")
+        try:
+            post_discord_log(content=msg)
+        except Exception as e:
+            print(f"❌ Discord LOG send failed: {repr(e)}")
         print(msg)
         return
 
@@ -162,9 +133,10 @@ def main() -> None:
         result = run_engine(games, cfg)
     except Exception as e:
         msg = f"❌ Erreur run_engine: {repr(e)}"
-        post_discord_log(content=msg + "\n" + traceback.format_exc()[:1500])
-        post_discord_team(content=msg)
-        post_discord_props(content=msg)
+        try:
+            post_discord_log(content=msg)
+        except Exception as ee:
+            print(f"❌ Discord LOG send failed: {repr(ee)}")
         print(msg)
         return
 
@@ -172,13 +144,12 @@ def main() -> None:
     prop_picks = result.get("prop_picks", []) or []
     meta = result.get("meta", {}) or {}
 
-    # 4) Always send META (LOG)
+    # 4) Always send META to LOG webhook
     meta_embed = {
         "title": "NBA BOT — META",
         "description": (
             f"Games(flat): {meta.get('games')} | "
             f"markets_tested: {meta.get('markets_tested')} | "
-            f"regions_used: {meta.get('regions_used', meta.get('regions_priority'))} | "
             f"model_weight: {meta.get('model_weight')} | "
             f"clip: {meta.get('clip_vs_market')} | "
             f"maxML/day: {meta.get('max_ml_per_day')} | "
@@ -186,18 +157,24 @@ def main() -> None:
         ),
         "color": 3447003,
     }
-    post_discord_log(content="", embeds=[meta_embed])
+    try:
+        post_discord_log(content="", embeds=[meta_embed])
+    except Exception as e:
+        print(f"❌ Discord LOG send failed: {repr(e)}")
 
-    # 5) Always send TEAM channel message (even if empty)
-    team_embed = _discord_embed_top("NBA — TOP 3 TEAM", team_picks, color=3066993)
-    post_discord_team(content="", embeds=[team_embed])
+    # 5) Send TEAM picks to TEAM webhook
+    try:
+        team_embed = _discord_embed_top("NBA — TOP 3 TEAM", team_picks, color=3066993)
+        post_discord_team(content="", embeds=[team_embed])
+    except Exception as e:
+        print(f"❌ Discord TEAM send failed: {repr(e)}")
 
-    # 6) Always send PROPS channel message (even if empty)
-    props_embed = _discord_embed_top("NBA — TOP 3 PROPS", prop_picks, color=10181046)
-    post_discord_props(content="", embeds=[props_embed])
-
-    # 7) End ping (proves the run finished)
-    post_discord_log(content="NBA BOT: main.py finished ✅")
+    # 6) Send PROPS picks to PROPS webhook
+    try:
+        props_embed = _discord_embed_top("NBA — TOP 3 PROPS", prop_picks, color=10181046)
+        post_discord_props(content="", embeds=[props_embed])
+    except Exception as e:
+        print(f"❌ Discord PROPS send failed: {repr(e)}")
 
     # Local print for Actions logs
     print(json.dumps({"meta": meta, "team_picks": team_picks, "prop_picks": prop_picks}, indent=2, ensure_ascii=False))

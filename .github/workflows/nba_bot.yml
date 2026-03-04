@@ -1,136 +1,42 @@
-name: Discord Webhook Test
+name: NBA Bot
 
 on:
+  schedule:
+    - cron: "30 16 * * *"
+    - cron: "30 21 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: nba-bot-main
+  cancel-in-progress: false
+
 jobs:
-  test:
+  run:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
-      - name: Show which secret is used (no leak)
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build team features (recommended)
+        run: python build_team_features.py
+
+      - name: Run bot
         env:
-          DISCORD_TEST_WEBHOOK: ${{ secrets.DISCORD_TEST_WEBHOOK }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
+          DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
-        run: |
-          python - <<'PY'
-          import os, json
-          def normalize(v: str) -> str:
-              v = (v or "").strip()
-              if v.startswith("{"):
-                  try:
-                      v = json.loads(v).get("url","").strip()
-                  except Exception:
-                      pass
-              if v.startswith('"') and v.endswith('"'):
-                  v = v[1:-1]
-              return v.strip()
-
-          test = normalize(os.getenv("DISCORD_TEST_WEBHOOK",""))
-          log  = normalize(os.getenv("DISCORD_LOG_WEBHOOK",""))
-
-          chosen = test or log
-          src = "DISCORD_TEST_WEBHOOK" if test else ("DISCORD_LOG_WEBHOOK" if log else "NONE")
-
-          print(f"Chosen secret: {src}")
-          if not chosen:
-              raise SystemExit("Missing webhook secret. Set DISCORD_TEST_WEBHOOK (recommended) or DISCORD_LOG_WEBHOOK.")
-          print("Webhook looks non-empty (masked by GitHub).")
-          PY
-
-      - name: POST via curl (shows HTTP status + response body)
-        env:
-          DISCORD_TEST_WEBHOOK: ${{ secrets.DISCORD_TEST_WEBHOOK }}
-          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
-        run: |
-          set -e
-          python - <<'PY' > /tmp/webhook_url.txt
-          import os, json
-          def normalize(v: str) -> str:
-              v = (v or "").strip()
-              if v.startswith("{"):
-                  try:
-                      v = json.loads(v).get("url","").strip()
-                  except Exception:
-                      pass
-              if v.startswith('"') and v.endswith('"'):
-                  v = v[1:-1]
-              return v.strip()
-          url = normalize(os.getenv("DISCORD_TEST_WEBHOOK","")) or normalize(os.getenv("DISCORD_LOG_WEBHOOK",""))
-          print(url)
-          PY
-
-          URL="$(cat /tmp/webhook_url.txt | tr -d '\n' | tr -d '\r')"
-
-          echo "Sending test message..."
-          BODY='{"content":"✅ Discord webhook test from GitHub Actions (curl)"}'
-
-          # -i: include headers, -sS: quiet but show errors, -o: save body, -w: print status code
-          HTTP_CODE=$(curl -sS -o /tmp/resp.txt -w "%{http_code}" -i \
-            -H "Content-Type: application/json" \
-            -X POST \
-            --data "$BODY" \
-            "$URL" || true)
-
-          echo "HTTP_CODE=$HTTP_CODE"
-          echo "---- Response (first 4000 chars) ----"
-          head -c 4000 /tmp/resp.txt || true
-          echo
-          echo "-----------------------------------"
-
-          # Discord webhook success is usually 204 (No Content) or sometimes 200
-          if [ "$HTTP_CODE" != "204" ] && [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::Discord webhook POST failed (HTTP $HTTP_CODE)."
-            echo "Common causes:"
-            echo "- Webhook URL invalid (wrong ID/token, copied partially, old webhook deleted)"
-            echo "- Webhook points to a channel/thread that no longer exists"
-            echo "- You pasted JSON instead of URL (this workflow supports both, but your secret might be malformed)"
-            echo "- Discord returned 403: usually 'Missing Access' / invalid token / webhook revoked"
-            exit 1
-          fi
-
-      - name: POST via python (second method)
-        env:
-          DISCORD_TEST_WEBHOOK: ${{ secrets.DISCORD_TEST_WEBHOOK }}
-          DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
-        run: |
-          python - <<'PY'
-          import os, json, urllib.request, urllib.error
-
-          def normalize(v: str) -> str:
-              v = (v or "").strip()
-              if v.startswith("{"):
-                  try:
-                      v = json.loads(v).get("url","").strip()
-                  except Exception:
-                      pass
-              if v.startswith('"') and v.endswith('"'):
-                  v = v[1:-1]
-              return v.strip()
-
-          url = normalize(os.getenv("DISCORD_TEST_WEBHOOK","")) or normalize(os.getenv("DISCORD_LOG_WEBHOOK",""))
-          payload = {"content": "✅ Discord webhook test from GitHub Actions (python)"}
-          data = json.dumps(payload).encode("utf-8")
-
-          req = urllib.request.Request(
-              url,
-              data=data,
-              headers={"Content-Type": "application/json", "User-Agent": "github-actions-webhook-test"},
-              method="POST",
-          )
-
-          try:
-              with urllib.request.urlopen(req, timeout=20) as r:
-                  print("Status:", r.status)
-                  if r.status not in (200, 204):
-                      raise SystemExit(f"Unexpected status {r.status}")
-          except urllib.error.HTTPError as e:
-              body = e.read(4000)
-              print("HTTPError:", e.code)
-              print("Body:", body.decode("utf-8", "ignore"))
-              raise
-          PY
+        run: python main.py

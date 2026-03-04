@@ -1,22 +1,44 @@
 {
-  "regions_priority": ["us"],
-  "markets": ["spreads", "totals", "h2h"],
-
-  "model_weight": 0.7,
-  "clip_vs_market": 0.08,
-
-  "min_odds": 1.5,
-  "max_odds": 2.2,
-
-  "min_edge": 0.02,
-  "min_ev": 0.0,
-
-  "max_ml_per_day": 1,
-  "max_odds_ml": 2.2,
-
+  "sport_key": "basketball_nba",
+  "regions_priority": [
+    "us",
+    "us2",
+    "eu",
+    "uk",
+    "au"
+  ],
+  "team_markets": [
+    "h2h",
+    "spreads",
+    "totals"
+  ],
+  "prop_markets": [
+    "player_points",
+    "player_rebounds",
+    "player_assists",
+    "player_points_rebounds_assists",
+    "player_points_rebounds",
+    "player_points_assists",
+    "player_rebounds_assists"
+  ],
   "max_picks_team": 3,
   "max_picks_props": 3,
-
-  "max_overround": 0.15,
-  "kelly_penalty_overround": 0.25
+  "one_pick_per_match": true,
+  "max_ml_per_day": 2,
+  "min_odds": 1.5,
+  "max_odds": 2.2,
+  "clip_vs_market": 0.08,
+  "model_weight": 0.75,
+  "props_model_weight": 0.75,
+  "min_edge": 0.02,
+  "min_edge_props": 0.02,
+  "min_ev": 0.0,
+  "haircut_trigger": 0.06,
+  "haircut_rate": 0.3,
+  "edge_refuse": 0.15,
+  "props_min_games": 8,
+  "props_n_screen": 5000,
+  "props_n_full": 20000,
+  "props_refine_k": 8,
+  "nba_season": "2025-26"
 }

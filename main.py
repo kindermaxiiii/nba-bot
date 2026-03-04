@@ -1,144 +1,276 @@
-# main.py
+"""main.py (V7)
+
+- Fetch TEAM markets from OddsAPI (with region fallback)
+- Build model-first TEAM picks (top 3)
+- Attempt PROPS only if OddsAPI actually supports player_* markets
+- Post to Discord (non-blocking)
+- Dump audit artifacts (JSON)
+
+If props are not supported (HTTP 422 INVALID_MARKET), we output:
+- "NO BET PROPS" + detailed list of unsupported markets.
+
+The script is designed to be *Discord-non-blocking*.
+OddsAPI failures are logged and the run exits gracefully.
+"""
+
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+import os
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
-from context import post_discord_log, post_discord_team, post_discord_props
-from odds_api import fetch_odds_with_fallback, fetch_odds
-from engine import build_team_candidates, build_portfolio_team, dump_artifacts
-from props_engine_v6 import build_prop_candidates
-from formatting import meta_embed, picks_embed
-from utils import now_iso
-
-
-def load_cfg() -> Dict[str, Any]:
-    with open("config.json", "r", encoding="utf-8") as f:
-        return json.load(f)
+from context import post_discord_log, post_discord_props, post_discord_team
+from engine import build_team_candidates, build_team_portfolio, dump_artifacts, norm_team
+from formatting import embed_meta, embed_no_picks, embed_picks
+from injury_model import fetch_injuries
+from odds_api import fetch_odds, fetch_odds_with_fallback
+from slate_volatility import classify_slate
+from utils import load_json
 
 
-def _props_fetch(cfg: Dict[str, Any]) -> tuple[list[dict], dict]:
-    # Try each props market individually to avoid 422 killing all.
-    sport_key = cfg.get("sport_key", "basketball_nba")
-    regions = cfg.get("regions_priority") or ["us"]
-    prop_markets = cfg.get("prop_markets") or [
-        "player_points", "player_rebounds", "player_assists", "player_points_rebounds_assists"
-    ]
-    # Only keep supported keys known by our parser
-    prop_markets = [m for m in prop_markets if m]
+def utc_run_id() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
-    all_games: List[Dict[str, Any]] = []
-    supported: List[str] = []
-    unsupported: Dict[str, str] = {}
 
-    # Use first region that works for team; for props, try regions in order but stop at first 200 per market
-    for pm in prop_markets:
-        got = False
-        last_err = None
-        for region in regions:
-            games, meta = fetch_odds(sport_key, region, [pm])
-            if games:
-                all_games.extend(games)
-                supported.append(pm)
-                got = True
-                break
-            if meta.get("status") == 422:
-                last_err = meta.get("error") or "422 invalid_market"
-                # no need to try other regions
-                break
-            last_err = meta.get("error") or f"HTTP {meta.get('status')}"
-        if not got:
-            unsupported[pm] = last_err or "no data"
+def env(name: str, default: Optional[str] = None) -> Optional[str]:
+    v = os.getenv(name)
+    if v is None or str(v).strip() == "":
+        return default
+    return str(v).strip()
 
-    return all_games, {"supported": sorted(set(supported)), "unsupported": unsupported}
+
+def ensure_games(x: Any) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Odds layer returns either list or (list, meta)."""
+    if isinstance(x, tuple) and len(x) == 2 and isinstance(x[0], list) and isinstance(x[1], dict):
+        return x[0], x[1]
+    if isinstance(x, list):
+        return x, {}
+    if isinstance(x, dict) and "data" in x and isinstance(x["data"], list):
+        return x["data"], {k: v for k, v in x.items() if k != "data"}
+    return [], {}
+
+
+def filter_future_games(games: List[Dict[str, Any]], hours: int = 36) -> List[Dict[str, Any]]:
+    now = datetime.now(timezone.utc)
+    out: List[Dict[str, Any]] = []
+    for g in games:
+        ct = g.get("commence_time")
+        if not ct:
+            out.append(g)
+            continue
+        try:
+            dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+        except Exception:
+            out.append(g)
+            continue
+        if dt >= now and (dt - now).total_seconds() <= hours * 3600:
+            out.append(g)
+    return out
+
+
+def build_injury_adjust() -> Dict[str, Dict[str, Any]]:
+    injuries = fetch_injuries()
+    adj: Dict[str, Dict[str, Any]] = {}
+    for team, ti in injuries.items():
+        adj[team] = {
+            "out": int(ti.out),
+            "doubtful": int(ti.doubtful),
+            "questionable": int(ti.questionable),
+            "vol": float(ti.volatility_score()),
+            "mu": float(ti.mu_points()),
+            "sigma_mult": float(ti.sigma_mult()),
+        }
+    return adj
+
+
+def props_probe(cfg: Dict[str, Any]) -> Tuple[bool, Dict[str, str], List[Dict[str, Any]]]:
+    """Return (supported, unsupported_map, games).
+
+    We probe only one market to avoid extra API calls.
+    """
+    regions = cfg.get("regions_priority", ["us"]) or ["us"]
+    prop_markets: List[str] = cfg.get("prop_markets", []) or []
+
+    if not prop_markets:
+        return False, {"(none)": "No prop_markets configured"}, []
+
+    probe = prop_markets[0]
+    try:
+        games = fetch_odds([probe], regions=regions[0])
+        return True, {}, games
+    except Exception as e:
+        msg = repr(e)
+        if "HTTP 422" in msg or "INVALID_MARKET" in msg or "Markets not supported" in msg:
+            return False, {m: msg for m in prop_markets}, []
+        return False, {probe: msg}, []
 
 
 def main() -> None:
-    cfg = load_cfg()
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = utc_run_id()
 
-    # TEAM fetch with fallback markets on 422
-    team_markets = cfg.get("team_markets") or ["h2h", "spreads", "totals"]
-    games, fetch_meta = fetch_odds_with_fallback(
-        sport_key=cfg.get("sport_key", "basketball_nba"),
-        markets=team_markets,
-        regions_priority=cfg.get("regions_priority", ["us", "us2", "eu", "uk"]),
-    )
+    try:
+        cfg = load_json("config.json") or {}
 
-    if not games:
-        msg = f"❌ OddsAPI TEAM: aucun match. regions_tried={fetch_meta.get('regions_tried')} error={fetch_meta.get('error')}"
-        post_discord_log(content=msg)
-        print(msg)
-        return
+        # TEAM config (engine)
+        odds_range = [float(cfg.get("min_odds", 1.5)), float(cfg.get("max_odds", 2.2))]
+        team_cfg = {
+            "odds_range": odds_range,
+            "clip": float(cfg.get("clip_vs_market", 0.08)),
+            "haircut_trigger": float(cfg.get("haircut_trigger", 0.06)),
+            "haircut_rate": float(cfg.get("haircut_rate", 0.30)),
+            "min_edge": float(cfg.get("min_edge", 0.02)),
+            "edge_refuse": float(cfg.get("edge_refuse", 0.15)),
+            "one_pick_per_match": bool(cfg.get("one_pick_per_match", True)),
+            "max_ml_per_day": int(cfg.get("max_ml_per_day", 2)),
+        }
 
-    team_candidates, team_meta, spread_map = build_team_candidates(games, cfg)
-    team_picks = build_portfolio_team(team_candidates, cfg)
+        # Load team features (generated by build_team_features.py)
+        features = load_json(os.path.join("data", "team_features.json")) or {}
 
-    # PROPS fetch (only if supported)
-    props_games, props_meta = _props_fetch(cfg)
-    prop_candidates: List[Dict[str, Any]] = []
-    prop_picks: List[Dict[str, Any]] = []
+        # Injury adjustments (optional)
+        inj_adjust = build_injury_adjust()
 
-    props_note = None
-    if props_meta["supported"]:
-        prop_candidates, pc_meta = build_prop_candidates(props_games, cfg, team_spread_map=spread_map)
-        # diversify: 1 pick per player if possible
-        used_players = set()
-        for c in prop_candidates:
-            if len(prop_picks) >= int(cfg.get("max_picks_props", 3)):
-                break
-            pl = c.get("player")
-            if pl and pl in used_players:
+        # Fetch TEAM slate
+        team_markets = cfg.get("team_markets", ["h2h", "spreads", "totals"]) or ["h2h", "spreads", "totals"]
+        raw = fetch_odds_with_fallback(markets=team_markets, regions_priority=cfg.get("regions_priority", ["us"]))
+        games, odds_meta = ensure_games(raw)
+        games = filter_future_games(games, hours=int(cfg.get("slate_hours", 36)))
+
+        if not games:
+            raise RuntimeError("No games received from OddsAPI")
+
+        # Feature coverage sanity check
+        teams_in_slate = set()
+        for g in games:
+            if g.get("home_team"):
+                teams_in_slate.add(norm_team(str(g.get("home_team"))))
+            if g.get("away_team"):
+                teams_in_slate.add(norm_team(str(g.get("away_team"))))
+
+        feat_norm = {norm_team(k): v for k, v in (features or {}).items()}
+        covered = sum(1 for t in teams_in_slate if t in feat_norm)
+        coverage_pct = round(100.0 * covered / max(1, len(teams_in_slate)), 1)
+
+        # TEAM candidates + portfolio
+        team_candidates, team_meta, spread_map = build_team_candidates(games, team_cfg, features, inj_adjust=inj_adjust)
+
+        # Additional discipline filters
+        filtered_candidates: List[Dict[str, Any]] = []
+        for c in team_candidates:
+            if float(c.get("edge", 0.0)) < float(team_cfg.get("min_edge", 0.0)):
                 continue
-            prop_picks.append(c)
-            if pl:
-                used_players.add(pl)
+            if float(c.get("edge", 0.0)) > float(team_cfg.get("edge_refuse", 0.15)):
+                continue
+            filtered_candidates.append(c)
 
-        if len(prop_picks) < int(cfg.get("max_picks_props", 3)):
-            # fill allow duplicates
-            for c in prop_candidates:
-                if len(prop_picks) >= int(cfg.get("max_picks_props", 3)):
+        team_picks = build_team_portfolio(filtered_candidates, team_cfg, top_n=int(cfg.get("max_picks_team", 3)))
+
+        # Slate volatility (Couche -2)
+        injury_scores: List[float] = []
+        for t in teams_in_slate:
+            for k, v in inj_adjust.items():
+                if norm_team(k) == t:
+                    injury_scores.append(float(v.get("vol", 0.0)))
                     break
-                if c in prop_picks:
-                    continue
-                prop_picks.append(c)
 
-        if not prop_picks:
-            props_note = pc_meta.get("reason") if isinstance(pc_meta, dict) else "No prop candidates passed discipline."
-    else:
-        # NO BET PROPS detailed
-        props_note = (
-            "NO BET PROPS: OddsAPI ne fournit pas les marchés props sur ton plan/endpoint.\n"
-            f"Unsupported: {props_meta['unsupported']}"
+        abs_spreads = list(spread_map.values())
+        sv = classify_slate(injury_scores, abs_spreads)
+
+        # PROPS support probe
+        props_supported, props_unsupported, props_games = props_probe(cfg)
+        props_note = ""
+        prop_picks: List[Dict[str, Any]] = []
+
+        if not props_supported:
+            props_note = "NO BET PROPS: OddsAPI ne fournit pas les marchés props sur ton plan/endpoint."
+        else:
+            try:
+                from props_engine_v6 import build_prop_picks
+
+                prop_picks = build_prop_picks(props_games, cfg, spread_map)[: int(cfg.get("max_picks_props", 3))]
+            except Exception as e:
+                props_note = f"NO BET PROPS: erreur props engine: {repr(e)}"
+
+        meta = {
+            "run_id": run_id,
+            "ts_utc": datetime.now(timezone.utc).isoformat(),
+            "region_used": odds_meta.get("region_used"),
+            "markets_used": odds_meta.get("markets_used", team_markets),
+            "games": len(games),
+            "team_candidates": len(filtered_candidates),
+            "team_picks": len(team_picks),
+            "props_supported": bool(props_supported),
+            "props_picks": len(prop_picks),
+            "odds_range": odds_range,
+            "clip": team_cfg.get("clip"),
+            "clip_hits": team_meta.get("clip_hits"),
+            "clip_hit_rate": team_meta.get("clip_hit_rate"),
+            "haircut": {"trigger": team_cfg.get("haircut_trigger"), "rate": team_cfg.get("haircut_rate")},
+            "feature_coverage_pct": coverage_pct,
+            "slate": {
+                "class": sv.slate_class,
+                "injury_vol": sv.injury_vol,
+                "blowout_index": sv.blowout_index,
+                "kelly_mult": sv.kelly_mult,
+                "props_mult": sv.props_mult,
+            },
+            "props_unsupported": props_unsupported,
+            "props_note": props_note,
+        }
+
+        art_dir = dump_artifacts(
+            run_id,
+            {
+                "meta": meta,
+                "team_candidates": filtered_candidates,
+                "team_picks": team_picks,
+                "spread_map": spread_map,
+                "injury_adjust": inj_adjust,
+                "props_status": {
+                    "supported": props_supported,
+                    "unsupported": props_unsupported,
+                    "note": props_note,
+                },
+            },
         )
 
-    # META
-    meta = {
-        "run_id": run_id,
-        "ts_utc": now_iso(),
-        "region_used": fetch_meta.get("region_used"),
-        "markets_used": fetch_meta.get("markets_used"),
-        "games": len(games),
-        "team_candidates": team_meta.get("team_candidates"),
-        "team_picks": len(team_picks),
-        "props_supported": props_meta["supported"],
-        "props_picks": len(prop_picks),
-        "odds_range": f"[{cfg.get('min_odds')},{cfg.get('max_odds')}]",
-        "clip": cfg.get("clip_vs_market"),
-        "haircut": f"trigger={cfg.get('haircut_trigger')} rate={cfg.get('haircut_rate')}",
-    }
+        # Discord
+        post_discord_log(content="", embeds=[embed_meta(meta)])
 
-    # dump artifacts for audit
-    dump_artifacts(run_id, meta, team_candidates, team_picks, prop_candidates, prop_picks)
+        if team_picks:
+            post_discord_team(content="", embeds=[embed_picks("NBA — TOP 3 TEAM (Model-First)", team_picks)])
+        else:
+            post_discord_team(content="", embeds=[embed_no_picks("NBA — TOP 3 TEAM", "Aucun pick (filtres EV/edge/odds/discipline).")])
 
-    # Discord outputs
-    post_discord_log(content="", embeds=[meta_embed(meta)])
-    post_discord_team(content="", embeds=[picks_embed("NBA — TOP 3 TEAM (Model-First)", team_picks, 3066993)])
-    post_discord_props(content=props_note or "", embeds=[picks_embed("NBA — TOP 3 PROPS (V6)", prop_picks, 10181046)])
+        if props_supported and prop_picks:
+            post_discord_props(content="", embeds=[embed_picks("NBA — TOP 3 PROPS (V6)", prop_picks, color=10181046)])
+        else:
+            lines = []
+            if props_note:
+                lines.append(props_note)
+            if props_unsupported:
+                lines.append("Unsupported markets: " + ", ".join(list(props_unsupported.keys())[:10]))
+            post_discord_props(
+                content="\n".join(lines) if lines else "NO BET PROPS.",
+                embeds=[embed_no_picks("NBA — TOP 3 PROPS (V6)", "Aucun pick.")],
+            )
 
-    # Print to logs
-    print(json.dumps({"meta": meta, "team_picks": team_picks, "prop_picks": prop_picks}, ensure_ascii=False, indent=2))
+        print("Artifacts directory:", art_dir)
+        print(json.dumps({"meta": meta, "team_picks": team_picks, "prop_picks": prop_picks}, ensure_ascii=False, indent=2))
+
+    except Exception as e:
+        # Non-blocking fatal error: try to send to Discord LOG + write minimal artifact.
+        err = f"❌ main.py fatal error: {repr(e)}"
+        try:
+            post_discord_log(content=err, embeds=[])
+        except Exception:
+            pass
+        try:
+            dump_artifacts(run_id, {"fatal": {"error": repr(e)}})
+        except Exception:
+            pass
+        print(err)
 
 
 if __name__ == "__main__":

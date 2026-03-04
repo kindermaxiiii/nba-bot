@@ -31,7 +31,7 @@ def _script_weights(mu: float) -> Tuple[float, float, float]:
     return close / s, controlled / s, blow / s
 
 
-def margin_model(home: Dict[str, Any], away: Dict[str, Any]) -> Tuple[float, float]:
+def margin_model(home: Dict[str, Any], away: Dict[str, Any], inj_mu_home: float = 0.0, inj_mu_away: float = 0.0, inj_sigma_mult: float = 1.0) -> Tuple[float, float]:
     """
     Return (mu, sigma) for home margin.
     Uses net_rating if available; else fallback to 0 with wider sigma.
@@ -41,9 +41,11 @@ def margin_model(home: Dict[str, Any], away: Dict[str, Any]) -> Tuple[float, flo
 
     if h_net is None or a_net is None:
         # fallback: uncertain
-        return HCA_PTS, 13.5
+        mu = HCA_PTS + float(inj_mu_home) - float(inj_mu_away)
+        sigma = 13.5 * float(inj_sigma_mult)
+        return mu, sigma
 
-    mu = float(h_net) - float(a_net) + HCA_PTS
+    mu = float(h_net) - float(a_net) + HCA_PTS + float(inj_mu_home) - float(inj_mu_away)
 
     # sigma baseline; inflate with pace (higher pace -> more variance)
     h_pace = home.get("pace")
@@ -60,10 +62,12 @@ def margin_model(home: Dict[str, Any], away: Dict[str, Any]) -> Tuple[float, flo
     sig_close, sig_ctrl, sig_blow = 10.5, 12.0, 15.0
     sigma_eff = math.sqrt(w_close * sig_close**2 + w_ctrl * sig_ctrl**2 + w_blow * sig_blow**2)
 
+    sigma_eff *= float(inj_sigma_mult)
+
     return mu, max(9.5, sigma_eff)
 
 
-def expected_total(home: Dict[str, Any], away: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+def expected_total(home: Dict[str, Any], away: Dict[str, Any], inj_total_shift: float = 0.0, inj_sigma_mult: float = 1.0) -> Optional[Tuple[float, float]]:
     """
     Return (mu_total, sigma_total) using pace + ORtg/DRtg if available.
     """
@@ -77,9 +81,10 @@ def expected_total(home: Dict[str, Any], away: Dict[str, Any]) -> Optional[Tuple
     pace = 0.5 * (float(h_pace) + float(a_pace))
     home_ppp = 0.5 * (float(h_or) + float(a_dr)) / 100.0
     away_ppp = 0.5 * (float(a_or) + float(h_dr)) / 100.0
-    mu = float(pace * (home_ppp + away_ppp))
+    mu = float(pace * (home_ppp + away_ppp)) + float(inj_total_shift)
 
     sigma = 22.0 * math.sqrt(clamp(pace / 100.0, 0.85, 1.25))
+    sigma *= float(inj_sigma_mult)
     return mu, sigma
 
 
@@ -106,13 +111,16 @@ def team_p_model(
     line: Optional[float],
     away_team: str,
     home_team: str,
-    features: Optional[Dict[str, Dict[str, Any]]] = None
+    features: Optional[Dict[str, Dict[str, Any]]] = None,
+    inj_mu_home: float = 0.0,
+    inj_mu_away: float = 0.0,
+    inj_sigma_mult: float = 1.0,
 ) -> Optional[float]:
     features = features if features is not None else _load_team_features()
     home = features.get(home_team) or {}
     away = features.get(away_team) or {}
 
-    mu, sigma = margin_model(home, away)
+    mu, sigma = margin_model(home, away, inj_mu_home=inj_mu_home, inj_mu_away=inj_mu_away, inj_sigma_mult=inj_sigma_mult)
 
     if market == "H2H":
         p_h = p_home_win(mu, sigma)
@@ -129,7 +137,7 @@ def team_p_model(
         return p_h if selection == home_team else (1.0 - p_h)
 
     if market == "TOTAL" and line is not None:
-        et = expected_total(home, away)
+        et = expected_total(home, away, inj_total_shift=(inj_mu_home + inj_mu_away), inj_sigma_mult=inj_sigma_mult)
         if et is None:
             return None
         mu_t, sig_t = et

@@ -1,51 +1,84 @@
-# build_team_features.py
+"""build_team_features.py
+
+Generate a lightweight team features file used by model_team.py.
+
+Output: data/team_features.json
+
+Design:
+- Primary keys are OddsAPI-compatible full names whenever possible (e.g. "Los Angeles Lakers").
+- Also store a couple of aliases (nickname/abbr) to reduce name mismatch risk.
+
+Free data only (nba_api).
+"""
+
 from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from typing import Any, Dict
 
 from nba_api.stats.endpoints import leaguedashteamstats
+from nba_api.stats.library.parameters import SeasonAll
+from nba_api.stats.static import teams as static_teams
 
 
-def _season_string(dt: datetime) -> str:
-    y = dt.year
-    m = dt.month
-    if m >= 10:
-        y1, y2 = y, y + 1
-    else:
-        y1, y2 = y - 1, y
-    return f"{y1}-{str(y2)[-2:]}"
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+OUT_FILE = os.path.join(DATA_DIR, "team_features.json")
 
 
-def main() -> None:
-    os.makedirs("data", exist_ok=True)
-    season = _season_string(datetime.now(timezone.utc))
+def build_team_features(season: str = SeasonAll.all) -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
 
-    out = {}
-    try:
-        df = leaguedashteamstats.LeagueDashTeamStats(
-            season=season,
-            per_mode_detailed="Per100Possessions"
-        ).get_data_frames()[0]
+    print("Fetching team advanced stats from NBA API...")
+    df = leaguedashteamstats.LeagueDashTeamStats(
+        season=season,
+        measure_type_detailed_defense="Advanced",
+        per_mode_detailed="PerGame",
+    ).get_data_frames()[0]
 
-        for _, r in df.iterrows():
-            name = str(r.get("TEAM_NAME"))
-            out[name] = {
-                "ortg": float(r.get("OFF_RATING")) if r.get("OFF_RATING") is not None else None,
-                "drtg": float(r.get("DEF_RATING")) if r.get("DEF_RATING") is not None else None,
-                "net_rating": float(r.get("NET_RATING")) if r.get("NET_RATING") is not None else None,
-                "pace": float(r.get("PACE")) if r.get("PACE") is not None else None,
-            }
+    id_to_full = {int(t["id"]): (t.get("full_name") or "").strip() for t in static_teams.get_teams()}
 
-        with open("data/team_features.json", "w", encoding="utf-8") as f:
-            json.dump(out, f, indent=2, ensure_ascii=False)
-        print(f"Saved data/team_features.json ({len(out)} teams) for season {season}")
-    except Exception as e:
-        with open("data/team_features.json", "w", encoding="utf-8") as f:
-            json.dump({}, f, indent=2, ensure_ascii=False)
-        print("Failed to build team features:", repr(e))
+    out: Dict[str, Dict[str, Any]] = {}
+
+    for _, r in df.iterrows():
+        team_id = r.get("TEAM_ID")
+        if team_id is None:
+            continue
+        team_id = int(team_id)
+
+        full_name = id_to_full.get(team_id, "").strip()
+        if not full_name:
+            city = str(r.get("TEAM_CITY") or "").strip()
+            name = str(r.get("TEAM_NAME") or "").strip()
+            full_name = (city + " " + name).strip()
+        if not full_name:
+            continue
+
+        features = {
+            "team_id": team_id,
+            "net_rating": float(r.get("NET_RATING")),
+            "ortg": float(r.get("OFF_RATING")),
+            "drtg": float(r.get("DEF_RATING")),
+            "pace": float(r.get("PACE")),
+        }
+
+        # Primary key
+        out[full_name] = features
+
+        # Aliases
+        nickname = str(r.get("TEAM_NAME") or "").strip()
+        if nickname and nickname not in out:
+            out[nickname] = features
+
+        abbr = str(r.get("TEAM_ABBREVIATION") or "").strip()
+        if abbr and abbr not in out:
+            out[abbr] = features
+
+    with open(OUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=2)
+
+    print(f"Saved {len(out)} team feature rows to {OUT_FILE}")
 
 
 if __name__ == "__main__":
-    main()
+    build_team_features()

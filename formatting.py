@@ -40,3 +40,16 @@ def picks_embed(title: str, picks: List[Dict[str, Any]], color: int) -> Dict[str
 def meta_embed(meta: Dict[str, Any]) -> Dict[str, Any]:
     desc = "\n".join([f"**{k}**: {v}" for k, v in meta.items()])[:3900]
     return {"title": "NBA BOT — META", "description": desc, "color": 3447003}
+
+# Backward-compatible wrappers (used by main.py V7)
+
+def embed_picks(title: str, picks: List[Dict[str, Any]], color: int = 3066993) -> Dict[str, Any]:
+    return picks_embed(title, picks, color=color)
+
+
+def embed_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
+    return meta_embed(meta)
+
+
+def embed_no_picks(title: str, reason: str, color: int = 15158332) -> Dict[str, Any]:
+    return {"title": title, "description": reason, "color": color}

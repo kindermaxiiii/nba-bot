@@ -26,7 +26,9 @@ from formatting import embed_meta, embed_no_picks, embed_picks
 from injury_model import fetch_injuries
 from odds_api import fetch_odds, fetch_odds_with_fallback
 from slate_volatility import classify_slate
-from utils import load_json
+
+
+SPORT_KEY = os.getenv("SPORT_KEY", "basketball_nba")
 
 
 def utc_run_id() -> str:
@@ -38,6 +40,15 @@ def env(name: str, default: Optional[str] = None) -> Optional[str]:
     if v is None or str(v).strip() == "":
         return default
     return str(v).strip()
+
+
+def load_json(path: str) -> Dict[str, Any]:
+    """Local JSON loader (avoid depending on utils.py exports)."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
 
 
 def ensure_games(x: Any) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -97,7 +108,8 @@ def props_probe(cfg: Dict[str, Any]) -> Tuple[bool, Dict[str, str], List[Dict[st
 
     probe = prop_markets[0]
     try:
-        games = fetch_odds([probe], regions=regions[0])
+        # IMPORTANT: pass sport_key (fix)
+        games = fetch_odds(markets=[probe], regions=regions[0], sport_key=SPORT_KEY)
         return True, {}, games
     except Exception as e:
         msg = repr(e)
@@ -133,7 +145,14 @@ def main() -> None:
 
         # Fetch TEAM slate
         team_markets = cfg.get("team_markets", ["h2h", "spreads", "totals"]) or ["h2h", "spreads", "totals"]
-        raw = fetch_odds_with_fallback(markets=team_markets, regions_priority=cfg.get("regions_priority", ["us"]))
+
+        # IMPORTANT: pass sport_key (fix)
+        raw = fetch_odds_with_fallback(
+            sport_key=SPORT_KEY,
+            markets=team_markets,
+            regions_priority=cfg.get("regions_priority", ["us"]),
+        )
+
         games, odds_meta = ensure_games(raw)
         games = filter_future_games(games, hours=int(cfg.get("slate_hours", 36)))
 
@@ -153,7 +172,9 @@ def main() -> None:
         coverage_pct = round(100.0 * covered / max(1, len(teams_in_slate)), 1)
 
         # TEAM candidates + portfolio
-        team_candidates, team_meta, spread_map = build_team_candidates(games, team_cfg, features, inj_adjust=inj_adjust)
+        team_candidates, team_meta, spread_map = build_team_candidates(
+            games, team_cfg, features, inj_adjust=inj_adjust
+        )
 
         # Additional discipline filters
         filtered_candidates: List[Dict[str, Any]] = []
@@ -164,7 +185,9 @@ def main() -> None:
                 continue
             filtered_candidates.append(c)
 
-        team_picks = build_team_portfolio(filtered_candidates, team_cfg, top_n=int(cfg.get("max_picks_team", 3)))
+        team_picks = build_team_portfolio(
+            filtered_candidates, team_cfg, top_n=int(cfg.get("max_picks_team", 3))
+        )
 
         # Slate volatility (Couche -2)
         injury_scores: List[float] = []
@@ -188,13 +211,16 @@ def main() -> None:
             try:
                 from props_engine_v6 import build_prop_picks
 
-                prop_picks = build_prop_picks(props_games, cfg, spread_map)[: int(cfg.get("max_picks_props", 3))]
+                prop_picks = build_prop_picks(props_games, cfg, spread_map)[
+                    : int(cfg.get("max_picks_props", 3))
+                ]
             except Exception as e:
                 props_note = f"NO BET PROPS: erreur props engine: {repr(e)}"
 
         meta = {
             "run_id": run_id,
             "ts_utc": datetime.now(timezone.utc).isoformat(),
+            "sport_key": SPORT_KEY,
             "region_used": odds_meta.get("region_used"),
             "markets_used": odds_meta.get("markets_used", team_markets),
             "games": len(games),
@@ -241,10 +267,16 @@ def main() -> None:
         if team_picks:
             post_discord_team(content="", embeds=[embed_picks("NBA — TOP 3 TEAM (Model-First)", team_picks)])
         else:
-            post_discord_team(content="", embeds=[embed_no_picks("NBA — TOP 3 TEAM", "Aucun pick (filtres EV/edge/odds/discipline).")])
+            post_discord_team(
+                content="",
+                embeds=[embed_no_picks("NBA — TOP 3 TEAM", "Aucun pick (filtres EV/edge/odds/discipline).")],
+            )
 
         if props_supported and prop_picks:
-            post_discord_props(content="", embeds=[embed_picks("NBA — TOP 3 PROPS (V6)", prop_picks, color=10181046)])
+            post_discord_props(
+                content="",
+                embeds=[embed_picks("NBA — TOP 3 PROPS (V6)", prop_picks, color=10181046)],
+            )
         else:
             lines = []
             if props_note:

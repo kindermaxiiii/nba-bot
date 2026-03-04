@@ -22,13 +22,10 @@ def _safe_preview(obj: Any, limit: int = 900) -> str:
         s = json.dumps(obj, ensure_ascii=False)
     except Exception:
         s = str(obj)
-    if len(s) > limit:
-        s = s[:limit] + "…"
-    return s
+    return (s[:limit] + "…") if len(s) > limit else s
 
 
 def _maybe_json_load(x: Any) -> Any:
-    # OddsAPI wrappers sometimes return a JSON string.
     if isinstance(x, str):
         s = x.strip()
         if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
@@ -40,11 +37,25 @@ def _maybe_json_load(x: Any) -> Any:
 
 
 def _flatten_games(obj: Any) -> List[Dict[str, Any]]:
+    """
+    Supporte:
+    - List[Dict] (idéal)
+    - Tuple[List[...], ...] (ex: (games, meta) ou (region1_games, region2_games))
+    - List[List[Dict]] (une liste par région)
+    - Dict wrapper avec "data"
+    """
     out: List[Dict[str, Any]] = []
 
     def rec(x: Any) -> None:
         if x is None:
             return
+
+        # IMPORTANT: gérer tuple comme list
+        if isinstance(x, (list, tuple)):
+            for it in x:
+                rec(it)
+            return
+
         if isinstance(x, dict):
             if "data" in x:
                 rec(x["data"])
@@ -55,10 +66,8 @@ def _flatten_games(obj: Any) -> List[Dict[str, Any]]:
             for v in x.values():
                 rec(v)
             return
-        if isinstance(x, list):
-            for it in x:
-                rec(it)
-            return
+
+        # ignore autres types
 
     rec(obj)
     return out
@@ -84,7 +93,6 @@ def _discord_embed_top(title: str, picks: List[Dict[str, Any]], color: int) -> D
     for i, p in enumerate(picks, 1):
         line = p.get("line")
         line_s = f" | Line: {line}" if line is not None else ""
-
         odds = p.get("odds")
         odds_s = f"{float(odds):.2f}" if odds is not None else "?"
 
@@ -102,7 +110,6 @@ def _discord_embed_top(title: str, picks: List[Dict[str, Any]], color: int) -> D
 def main() -> None:
     cfg = load_config("config.json")
 
-    # 0) Quick env sanity
     api_key = _env("ODDS_API_KEY")
     if not api_key:
         msg = "❌ ODDS_API_KEY manquante dans les Secrets GitHub."
@@ -110,7 +117,7 @@ def main() -> None:
         print(msg)
         return
 
-    # 1) Fetch odds
+    # Fetch odds
     try:
         raw = fetch_odds_with_fallback(
             markets=cfg.markets,
@@ -124,10 +131,10 @@ def main() -> None:
 
     raw = _maybe_json_load(raw)
 
-    # 2) If OddsAPI returned an error object, show it clearly
+    # Si OddsAPI renvoie un objet erreur
     if isinstance(raw, dict) and ("error_code" in raw or "message" in raw):
         msg = (
-            "❌ OddsAPI a renvoyé une ERREUR (pas une liste de matchs).\n"
+            "❌ OddsAPI a renvoyé une ERREUR.\n"
             f"error_code: {raw.get('error_code')}\n"
             f"message: {raw.get('message')}\n"
             f"details: {raw.get('details_url')}\n"
@@ -137,10 +144,8 @@ def main() -> None:
         print(msg)
         return
 
-    # 3) Flatten games
     games = _flatten_games(raw)
 
-    # 4) Debug if empty
     if not games:
         msg = (
             "❌ Aucun match reçu depuis OddsAPI (games vide après flatten).\n"
@@ -152,7 +157,7 @@ def main() -> None:
         print(msg)
         return
 
-    # 5) Run engine
+    # Run engine
     try:
         result = run_engine(games, cfg)
     except Exception as e:
@@ -165,11 +170,11 @@ def main() -> None:
     prop_picks = result.get("prop_picks", []) or []
     meta = result.get("meta", {}) or {}
 
-    # LOG META
+    # META -> LOG
     meta_embed = {
         "title": "NBA BOT — META",
         "description": (
-            f"Games(flat): {meta.get('games')} | "
+            f"Games(flat): {len(games)} | "
             f"markets_tested: {meta.get('markets_tested')} | "
             f"regions_priority: {getattr(cfg, 'regions_priority', None)} | "
             f"markets(cfg): {getattr(cfg, 'markets', None)}"

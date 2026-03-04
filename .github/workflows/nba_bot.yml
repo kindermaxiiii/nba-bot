@@ -1,17 +1,10 @@
-name: NBA Bot
+name: NBA Bot (DEBUG RUN)
 
 on:
-  schedule:
-    - cron: "30 16 * * *"
-    - cron: "30 21 * * *"
   workflow_dispatch:
 
 permissions:
-  contents: write
-
-concurrency:
-  group: nba-bot-main
-  cancel-in-progress: false
+  contents: read
 
 jobs:
   run:
@@ -19,8 +12,26 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      - name: DEBUG 0 — Discord ping (pre-checkout)
+        env:
+          URL: ${{ secrets.DISCORD_LOG_WEBHOOK }}
+        run: |
+          set -e
+          if [ -z "$URL" ]; then echo "DISCORD_LOG_WEBHOOK empty"; exit 1; fi
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -d '{"content":"🟦 NBA BOT DEBUG: workflow started (pre-checkout)"}' \
+            "$URL")
+          echo "Discord HTTP=$CODE (expected 204)"
+
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: DEBUG 1 — List repo files
+        run: |
+          ls -la
+          echo "----"
+          find . -maxdepth 2 -type f | sed 's|^\./||'
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,12 +41,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Build team features
+      - name: DEBUG 2 — Discord ping (post-install)
         env:
-          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
-        run: python build_team_features.py
+          URL: ${{ secrets.DISCORD_LOG_WEBHOOK }}
+        run: |
+          set -e
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -d '{"content":"🟩 NBA BOT DEBUG: deps installed, about to run main.py"}' \
+            "$URL")
+          echo "Discord HTTP=$CODE (expected 204)"
 
-      - name: Run bot
+      - name: Run bot (main.py)
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}

@@ -1,32 +1,22 @@
 {
-  "sport_key": "basketball_nba",
-  "regions_priority": ["us", "us2", "eu", "uk", "au"],
+  "regions_priority": ["us"],
+  "markets": ["spreads", "totals", "h2h"],
 
-  "team_markets": ["spreads", "totals", "h2h"],
-  "prop_markets": ["player_points", "player_rebounds", "player_assists", "player_points_rebounds_assists"],
-
-  "preferred_books": ["fanduel", "draftkings", "betmgm", "caesars", "betrivers", "bovada", "betonlineag", "lowvig"],
-
-  "max_team_picks": 3,
-  "max_prop_picks": 3,
-
-  "max_ml_per_day": 2,
-
-  "odds_min": 1.50,
-  "odds_max": 2.20,
-
+  "model_weight": 0.7,
   "clip_vs_market": 0.08,
-  "edge_min_strict": 0.02,
-  "edge_min_fill": 0.00,
 
-  "haircut_trigger": 0.06,
-  "haircut_rate": 0.30,
+  "min_odds": 1.5,
+  "max_odds": 2.2,
 
-  "edge_refuse": 0.15,
+  "min_edge": 0.02,
+  "min_ev": 0.0,
 
-  "model_weight": 1.00,
+  "max_ml_per_day": 1,
+  "max_odds_ml": 2.2,
 
-  "props_last_n": 20,
-  "props_min_games": 8,
-  "props_blowout_penalty_spread": 10.0
+  "max_picks_team": 3,
+  "max_picks_props": 3,
+
+  "max_overround": 0.15,
+  "kelly_penalty_overround": 0.25
 }

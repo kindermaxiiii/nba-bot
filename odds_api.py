@@ -1,147 +1,176 @@
 # odds_api.py
+"""
+OddsAPI client with robust fallbacks.
+
+Key goals:
+- Always return (games_list, meta_dict) where games_list is a list of dict games.
+- Support regions fallback (cfg.regions_priority)
+- Support markets fallback:
+  * Try cfg.markets
+  * If OddsAPI returns 422 invalid_market, retry with core markets: h2h, spreads, totals
+  * Props markets (player_*) are attempted only if they are in cfg.markets.
+"""
+
 from __future__ import annotations
 
+import json
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
-
-import requests
-
-BASE = os.getenv("ODDS_API_BASE", "https://api.the-odds-api.com/v4")
+import urllib.request
+import urllib.error
+from typing import Any, Dict, List, Tuple
 
 
-def _api_key() -> str:
-    k = (os.getenv("ODDS_API_KEY") or "").strip()
-    if not k:
-        raise RuntimeError("ODDS_API_KEY missing")
-    return k
+ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 
 
-def _normalize_shape(x: Any) -> Any:
-    if isinstance(x, tuple) and len(x) == 2:
-        a, b = x
-        if isinstance(a, list):
-            return a
-        if isinstance(b, list):
-            return b
-        return a
-    if isinstance(x, dict) and "data" in x:
-        return x["data"]
-    return x
-
-
-def _flatten_games(x: Any) -> List[Dict[str, Any]]:
-    x = _normalize_shape(x)
-    out: List[Dict[str, Any]] = []
-
-    def rec(v: Any) -> None:
-        if v is None:
-            return
-        if isinstance(v, dict):
-            if "data" in v:
-                rec(v["data"])
-                return
-            if "home_team" in v and "away_team" in v:
-                out.append(v)
-                return
-            for vv in v.values():
-                rec(vv)
-            return
-        if isinstance(v, list):
-            for it in v:
-                rec(it)
-            return
-
-    rec(x)
-    return out
-
-
-def fetch_events(sport_key: str) -> List[Dict[str, Any]]:
-    url = f"{BASE}/sports/{sport_key}/events"
+def _get(url: str, timeout: int = 25) -> Tuple[int, Any, Dict[str, str]]:
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
-        r = requests.get(url, params={"apiKey": _api_key()}, timeout=20)
-        if r.status_code != 200:
-            return []
-        j = _normalize_shape(r.json())
-        return j if isinstance(j, list) else []
-    except Exception:
-        return []
-
-
-def fetch_odds(sport_key: str, regions: str, markets: List[str]) -> Any:
-    url = f"{BASE}/sports/{sport_key}/odds"
-    params = {
-        "apiKey": _api_key(),
-        "regions": regions,
-        "markets": ",".join([m.strip() for m in markets if m]),
-        "oddsFormat": "decimal",
-        "dateFormat": "iso",
-    }
-    r = requests.get(url, params=params, timeout=35)
-    if r.status_code != 200:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            status = r.status
+            data = json.loads(r.read().decode("utf-8"))
+            headers = {k.lower(): v for k, v in dict(r.headers).items()}
+            return status, data, headers
+    except urllib.error.HTTPError as e:
+        # OddsAPI returns JSON for errors as well
         try:
-            msg = r.json()
+            body = e.read().decode("utf-8")
+            data = json.loads(body) if body else {}
         except Exception:
-            msg = (r.text or "")[:500]
-        raise RuntimeError(f"OddsAPI HTTP {r.status_code}: {msg}")
-    return r.json()
+            data = {}
+        headers = {k.lower(): v for k, v in dict(e.headers).items()}
+        return e.code, data, headers
 
 
-def filter_books(games: List[Dict[str, Any]], preferred_books: Optional[List[str]]) -> List[Dict[str, Any]]:
-    if not preferred_books:
-        return games
-    prefs = {b.lower().strip() for b in preferred_books if b and str(b).strip()}
-    if not prefs:
-        return games
+def _as_list_games(data: Any) -> List[Dict[str, Any]]:
+    # OddsAPI returns list[game]; sometimes wrappers happen due to accidental tuple nesting.
+    if data is None:
+        return []
+    if isinstance(data, list):
+        # could be [[...]] accidental nesting
+        if len(data) == 1 and isinstance(data[0], list):
+            inner = data[0]
+            return inner if isinstance(inner, list) else []
+        return data
+    # If someone passed (data, meta)
+    if isinstance(data, tuple) and len(data) >= 1:
+        return _as_list_games(data[0])
+    # If dict wrapper
+    if isinstance(data, dict) and "data" in data and isinstance(data["data"], list):
+        return data["data"]
+    return []
 
-    out: List[Dict[str, Any]] = []
-    for g in games:
-        bms = g.get("bookmakers") or []
-        if not isinstance(bms, list):
-            out.append(g)
+
+def _normalize_markets(markets: List[str]) -> List[str]:
+    # de-dup, keep order
+    seen = set()
+    out = []
+    for m in markets or []:
+        m = (m or "").strip()
+        if not m or m in seen:
             continue
-
-        keep = []
-        for bm in bms:
-            if not isinstance(bm, dict):
-                continue
-            key = str(bm.get("key", "")).lower()
-            title = str(bm.get("title", "")).lower()
-            if key in prefs or title in prefs:
-                keep.append(bm)
-
-        if keep:
-            gg = dict(g)
-            gg["bookmakers"] = keep
-            out.append(gg)
-        else:
-            out.append(g)  # fallback: keep all books
-
+        out.append(m)
+        seen.add(m)
     return out
 
 
-def fetch_odds_with_fallback(
-    sport_key: str,
+def _core_markets() -> List[str]:
+    return ["h2h", "spreads", "totals"]
+
+
+def fetch_odds(
+    api_key: str,
+    region: str,
     markets: List[str],
-    regions_priority: List[str],
-    preferred_books: Optional[List[str]] = None,
+    odds_format: str = "decimal",
+    date_format: str = "iso",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    # auto-slate best effort (non-blocking)
-    _ = fetch_events(sport_key)
+    markets = _normalize_markets(markets)
+    url = (
+        f"{ODDS_API_BASE}/sports/basketball_nba/odds/"
+        f"?apiKey={api_key}"
+        f"&regions={region}"
+        f"&markets={','.join(markets)}"
+        f"&oddsFormat={odds_format}"
+        f"&dateFormat={date_format}"
+    )
+    status, data, headers = _get(url)
 
-    tried: List[str] = []
-    last_err: Optional[str] = None
+    meta = {
+        "region": region,
+        "markets": markets,
+        "status": status,
+        "headers": {k: headers.get(k) for k in ["x-requests-remaining", "x-requests-used", "x-requests-last"] if k in headers},
+        "error": None,
+        "note": None,
+        "raw_error": None,
+    }
 
-    for reg in regions_priority:
-        tried.append(reg)
-        try:
-            raw = fetch_odds(sport_key=sport_key, regions=reg, markets=markets)
-            games = _flatten_games(raw)
-            if games:
-                games = filter_books(games, preferred_books)
-                return games, {"region": reg, "regions_tried": tried, "markets": markets}
-        except Exception as e:
-            last_err = repr(e)
-            time.sleep(0.25)
+    if status == 200:
+        return _as_list_games(data), meta
 
-    return [], {"region": None, "regions_tried": tried, "markets": markets, "error": last_err}
+    # Normalize OddsAPI error shapes
+    err_msg = None
+    err_code = None
+    if isinstance(data, dict):
+        err_msg = data.get("message") or data.get("error") or None
+        err_code = data.get("error_code") or data.get("code") or None
+    meta["error"] = err_msg or f"HTTP {status}"
+    meta["raw_error"] = data
+
+    return [], meta
+
+
+def fetch_odds_with_fallback(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    api_key = os.getenv("ODDS_API_KEY", "").strip()
+    if not api_key:
+        return [], {"error": "Missing ODDS_API_KEY secret/env", "region_used": None, "markets_used": None}
+
+    regions = cfg.get("regions_priority") or ["us"]
+    regions = [r for r in regions if r]
+    markets = _normalize_markets(cfg.get("markets") or _core_markets())
+
+    meta: Dict[str, Any] = {
+        "regions_tried": [],
+        "region_used": None,
+        "markets_requested": markets,
+        "markets_used": None,
+        "status": None,
+        "error": None,
+        "note": None,
+        "headers": None,
+    }
+
+    # Try each region; within each region, handle 422 invalid_market by retrying core markets only.
+    for region in regions:
+        meta["regions_tried"].append(region)
+
+        games, m1 = fetch_odds(api_key=api_key, region=region, markets=markets)
+        meta["status"] = m1.get("status")
+        meta["headers"] = m1.get("headers")
+        meta["error"] = m1.get("error")
+        meta["region_used"] = region
+        meta["markets_used"] = markets
+
+        if games:
+            return games, meta
+
+        # If invalid_market (422), retry with core markets
+        if m1.get("status") == 422:
+            core = _core_markets()
+            games2, m2 = fetch_odds(api_key=api_key, region=region, markets=core)
+            meta["status"] = m2.get("status")
+            meta["headers"] = m2.get("headers")
+            meta["error"] = m2.get("error")
+            meta["region_used"] = region
+            meta["markets_used"] = core
+            meta["note"] = "Props/extra markets not supported by this OddsAPI endpoint/plan; retried with core markets only."
+            if games2:
+                return games2, meta
+
+        # Small backoff to be gentle
+        time.sleep(0.25)
+
+    meta["error"] = meta["error"] or "No data returned from OddsAPI after fallbacks."
+    return [], meta

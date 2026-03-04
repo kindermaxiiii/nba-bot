@@ -44,7 +44,7 @@ def _embed_top(title: str, picks: List[Dict[str, Any]], color: int) -> Dict[str,
 def main() -> None:
     cfg = load_config("config.json")
 
-    # TEAM odds fetch
+    # 1) Fetch TEAM odds with region/book fallback
     team_games, meta_fetch = fetch_odds_with_fallback(
         sport_key=cfg.sport_key,
         markets=cfg.team_markets,
@@ -53,14 +53,19 @@ def main() -> None:
     )
 
     if not team_games:
-        post_discord_log(content=f"❌ OddsAPI: aucun match. regions_tried={meta_fetch.get('regions_tried')} error={meta_fetch.get('error')}")
+        # Discord might fail; still print for logs
+        msg = f"❌ OddsAPI: aucun match. regions_tried={meta_fetch.get('regions_tried')} error={meta_fetch.get('error')}"
+        print(msg)
+        post_discord_log(content=msg, embeds=None, fail_hard=False)
         return
 
+    # 2) Run engine (team + props)
     result = run_engine(team_games, cfg)
     meta = result["meta"]
     team_picks = result["team_picks"]
     prop_picks = result["prop_picks"]
 
+    # 3) Discord outputs (non-blocking)
     meta_embed = {
         "title": "NBA BOT — META",
         "description": (
@@ -72,10 +77,12 @@ def main() -> None:
         "color": 3447003,
     }
 
-    post_discord_log(content="", embeds=[meta_embed])
-    post_discord_team(content="", embeds=[_embed_top("NBA — TOP 3 TEAM (Institutional)", team_picks, 3066993)])
-    post_discord_props(content="", embeds=[_embed_top("NBA — TOP 3 PROPS (Stat-only)", prop_picks, 10181046)])
+    # Send LOG first, but never fail the job on Discord issues
+    post_discord_log(content="", embeds=[meta_embed], fail_hard=False)
+    post_discord_team(content="", embeds=[_embed_top("NBA — TOP 3 TEAM (Institutional)", team_picks, 3066993)], fail_hard=False)
+    post_discord_props(content="", embeds=[_embed_top("NBA — TOP 3 PROPS (Stat-only)", prop_picks, 10181046)], fail_hard=False)
 
+    # 4) Always print full JSON to Actions logs for debugging
     print(json.dumps({"fetch": meta_fetch, "meta": meta, "team_picks": team_picks, "prop_picks": prop_picks}, indent=2, ensure_ascii=False))
 
 

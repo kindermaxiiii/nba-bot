@@ -2,46 +2,41 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
-from utils import pct
 
 
-def _fmt_pick(i: int, p: Dict[str, Any]) -> str:
-    return (
-        f"#{i} — {p['match']}\n"
-        f"Market: **{p['market']}**\n"
-        f"Pick: **{p['selection']} @ {p['odds']:.2f}** ({p['book']})\n"
-        f"p_model: {pct(p['p_model'])} | p_mkt: {pct(p['p_mkt'])} | p_real: {pct(p['p_real'])}\n"
-        f"EV: {pct(p['ev'])} | Edge: {pct(p['edge'])} | Dev: {pct(p['dev'])} | Score: {p['score']:.1f}/100\n"
-        f"Why: {p.get('why','')}\n"
-    )
+def _pct(x: Any) -> str:
+    try:
+        return f"{float(x)*100:.2f}%"
+    except Exception:
+        return "?"
 
 
-def format_team_message(picks: List[Dict[str, Any]]) -> str:
+def _num(x: Any) -> str:
+    try:
+        return f"{float(x):.1f}"
+    except Exception:
+        return "?"
+
+
+def picks_embed(title: str, picks: List[Dict[str, Any]], color: int) -> Dict[str, Any]:
     if not picks:
-        return "NBA — TOP 3 TEAM\nAucun pick (EV>=0 introuvable après filtre modèle + discipline)."
-    lines = ["NBA — TOP 3 TEAM\n"]
-    for i, p in enumerate(picks, 1):
-        lines.append(_fmt_pick(i, p))
-    return "\n".join(lines).strip()
+        return {"title": title, "description": "Aucun pick.", "color": 15158332}
 
-
-def format_props_message(picks: List[Dict[str, Any]], note: str | None = None) -> str:
-    if not picks:
-        msg = "NBA — TOP 3 PROPS\nAucun pick."
-        if note:
-            msg += f"\n({note})"
-        return msg
-    lines = ["NBA — TOP 3 PROPS\n"]
+    lines: List[str] = []
     for i, p in enumerate(picks, 1):
-        lines.append(_fmt_pick(i, p))
-    if note:
-        lines.append(f"Note: {note}")
-    return "\n".join(lines).strip()
+        line = p.get("line")
+        line_s = f" | Line: {line}" if line is not None else ""
+        lines.append(
+            f"**#{i}** — {p.get('match','?')}\n"
+            f"Market: **{p.get('market','?')}**{line_s}\n"
+            f"Pick: **{p.get('selection','?')}** @ **{float(p.get('odds',0)):.2f}** ({p.get('book','?')})\n"
+            f"p_model: {_pct(p.get('p_model'))} | p_mkt: {_pct(p.get('p_mkt'))} | p_real: {_pct(p.get('p_real'))}\n"
+            f"EV: {_pct(p.get('ev'))} | Edge: {_pct(p.get('edge'))} | Dev: {_pct(p.get('dev'))} | Score: {_num(p.get('score'))}/100\n"
+            f"Why: {p.get('why','')}\n"
+        )
+    return {"title": title, "description": "\n".join(lines)[:3900], "color": color}
 
 
 def meta_embed(meta: Dict[str, Any]) -> Dict[str, Any]:
-    # Discord embed payload
-    desc = []
-    for k, v in meta.items():
-        desc.append(f"**{k}**: {v}")
-    return {"title": "NBA BOT — META", "description": "\n".join(desc)[:3900]}
+    desc = "\n".join([f"**{k}**: {v}" for k, v in meta.items()])[:3900]
+    return {"title": "NBA BOT — META", "description": desc, "color": 3447003}

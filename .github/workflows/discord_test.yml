@@ -1,0 +1,74 @@
+name: Discord Webhook Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test TEAM webhook
+        env:
+          WH: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
+        run: |
+          python - <<'PY'
+          import os, json, urllib.request, urllib.error
+          url=(os.getenv("WH") or "").strip()
+          if url.startswith("{"):
+              try: url=json.loads(url).get("url","").strip()
+              except: pass
+          if url.startswith('"') and url.endswith('"'):
+              url=url[1:-1].strip()
+          if not url: raise SystemExit("DISCORD_TEAM_WEBHOOK empty")
+          data=json.dumps({"content":"✅ Discord test TEAM (python)"}).encode("utf-8")
+          req=urllib.request.Request(url,data=data,headers={"Content-Type":"application/json"},method="POST")
+          try:
+              with urllib.request.urlopen(req,timeout=15) as r:
+                  print("TEAM status:", r.status)
+          except urllib.error.HTTPError as e:
+              print("TEAM HTTPError:", e.code); raise
+          PY
+
+      - name: Test PROPS webhook
+        env:
+          WH: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
+        run: |
+          python - <<'PY'
+          import os, json, urllib.request, urllib.error
+          url=(os.getenv("WH") or "").strip()
+          if url.startswith("{"):
+              try: url=json.loads(url).get("url","").strip()
+              except: pass
+          if url.startswith('"') and url.endswith('"'):
+              url=url[1:-1].strip()
+          if not url: raise SystemExit("DISCORD_PROPS_WEBHOOK empty")
+          data=json.dumps({"content":"✅ Discord test PROPS (python)"}).encode("utf-8")
+          req=urllib.request.Request(url,data=data,headers={"Content-Type":"application/json"},method="POST")
+          try:
+              with urllib.request.urlopen(req,timeout=15) as r:
+                  print("PROPS status:", r.status)
+          except urllib.error.HTTPError as e:
+              print("PROPS HTTPError:", e.code); raise
+          PY
+
+      - name: Test LOG webhook
+        env:
+          WH: ${{ secrets.DISCORD_LOG_WEBHOOK }}
+        run: |
+          python - <<'PY'
+          import os, json, urllib.request, urllib.error
+          url=(os.getenv("WH") or "").strip()
+          if url.startswith("{"):
+              try: url=json.loads(url).get("url","").strip()
+              except: pass
+          if url.startswith('"') and url.endswith('"'):
+              url=url[1:-1].strip()
+          if not url: raise SystemExit("DISCORD_LOG_WEBHOOK empty")
+          data=json.dumps({"content":"✅ Discord test LOG (python)"}).encode("utf-8")
+          req=urllib.request.Request(url,data=data,headers={"Content-Type":"application/json"},method="POST")
+          try:
+              with urllib.request.urlopen(req,timeout=15) as r:
+                  print("LOG status:", r.status)
+          except urllib.error.HTTPError as e:
+              print("LOG HTTPError:", e.code); raise
+          PY

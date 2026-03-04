@@ -3,102 +3,60 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional, Tuple
+import urllib.request
+import urllib.error
+from typing import Any, Dict, List, Optional
 
-import requests
 
-
-def _normalize(v: Optional[str]) -> str:
+def _normalize_webhook(v: str) -> str:
     v = (v or "").strip()
-    if not v:
-        return ""
-    # Allow secrets to be either JSON blob or plain URL
     if v.startswith("{"):
         try:
             v = json.loads(v).get("url", "").strip()
         except Exception:
             pass
-    # Strip accidental wrapping quotes
     if v.startswith('"') and v.endswith('"'):
-        v = v[1:-1].strip()
+        v = v[1:-1]
     return v.strip()
 
 
-def _mask_url(url: str) -> str:
-    # Keep only first part to help debug without leaking token
+def _post(url: str, payload: Dict[str, Any], timeout: int = 20) -> bool:
+    url = _normalize_webhook(url)
     if not url:
-        return ""
-    if "/api/webhooks/" in url:
-        a = url.split("/api/webhooks/")[0] + "/api/webhooks/"
-        b = url.split("/api/webhooks/")[1]
-        # b looks like "{id}/{token...}"
-        parts = b.split("/")
-        if len(parts) >= 2:
-            return a + parts[0] + "/" + parts[1][:6] + "..."
-    return url[:35] + "..."
-
-
-def _post(url: str, payload: Dict[str, Any], timeout: int = 20) -> Tuple[bool, str]:
-    url = _normalize(url)
-    if not url:
-        return False, "EMPTY_URL"
-
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "nba-bot/1.0 (+github-actions)",
-    }
-
+        return False
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     try:
-        r = requests.post(url, json=payload, headers=headers, timeout=timeout)
-        if r.status_code in (200, 204):
-            return True, f"HTTP_{r.status_code}"
-        # Return a short response snippet for diagnostics
-        snippet = (r.text or "").strip().replace("\n", " ")[:200]
-        return False, f"HTTP_{r.status_code} RESP={snippet}"
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status in (200, 204)
+    except urllib.error.HTTPError as e:
+        # Never crash the bot due to webhook errors; just print.
+        print(f"❌ Discord webhook HTTP {e.code}: {e.reason}")
+        return False
     except Exception as e:
-        return False, f"ERR_{type(e).__name__}:{e!s}"
+        print(f"❌ Discord webhook error: {repr(e)}")
+        return False
 
 
-def post_discord_team(content: str = "", embeds: Optional[List[Dict[str, Any]]] = None, fail_hard: bool = False) -> None:
-    payload: Dict[str, Any] = {}
-    if content is not None:
-        payload["content"] = content
-    if embeds:
-        payload["embeds"] = embeds
-
+def post_discord_team(content: str = "", embeds: Optional[List[Dict[str, Any]]] = None) -> bool:
     url = os.getenv("DISCORD_TEAM_WEBHOOK", "")
-    ok, st = _post(url, payload)
-    if not ok:
-        print(f"[DISCORD][TEAM] post failed: {st} url={_mask_url(_normalize(url))}")
-        if fail_hard:
-            raise RuntimeError(f"Discord TEAM failed: {st}")
-
-
-def post_discord_props(content: str = "", embeds: Optional[List[Dict[str, Any]]] = None, fail_hard: bool = False) -> None:
-    payload: Dict[str, Any] = {}
-    if content is not None:
-        payload["content"] = content
+    payload: Dict[str, Any] = {"content": content}
     if embeds:
         payload["embeds"] = embeds
+    return _post(url, payload)
 
+
+def post_discord_props(content: str = "", embeds: Optional[List[Dict[str, Any]]] = None) -> bool:
     url = os.getenv("DISCORD_PROPS_WEBHOOK", "")
-    ok, st = _post(url, payload)
-    if not ok:
-        print(f"[DISCORD][PROPS] post failed: {st} url={_mask_url(_normalize(url))}")
-        if fail_hard:
-            raise RuntimeError(f"Discord PROPS failed: {st}")
-
-
-def post_discord_log(content: str = "", embeds: Optional[List[Dict[str, Any]]] = None, fail_hard: bool = False) -> None:
-    payload: Dict[str, Any] = {}
-    if content is not None:
-        payload["content"] = content
+    payload: Dict[str, Any] = {"content": content}
     if embeds:
         payload["embeds"] = embeds
+    return _post(url, payload)
 
+
+def post_discord_log(content: str = "", embeds: Optional[List[Dict[str, Any]]] = None) -> bool:
     url = os.getenv("DISCORD_LOG_WEBHOOK", "")
-    ok, st = _post(url, payload)
-    if not ok:
-        print(f"[DISCORD][LOG] post failed: {st} url={_mask_url(_normalize(url))}")
-        if fail_hard:
-            raise RuntimeError(f"Discord LOG failed: {st}")
+    payload: Dict[str, Any] = {"content": content}
+    if embeds:
+        payload["embeds"] = embeds
+    return _post(url, payload)

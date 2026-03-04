@@ -18,7 +18,6 @@ def _api_key() -> str:
 
 
 def _normalize_shape(x: Any) -> Any:
-    # common: (games, meta) or (meta, games)
     if isinstance(x, tuple) and len(x) == 2:
         a, b = x
         if isinstance(a, list):
@@ -26,7 +25,6 @@ def _normalize_shape(x: Any) -> Any:
         if isinstance(b, list):
             return b
         return a
-    # wrapper dict
     if isinstance(x, dict) and "data" in x:
         return x["data"]
     return x
@@ -58,40 +56,29 @@ def _flatten_games(x: Any) -> List[Dict[str, Any]]:
     return out
 
 
-def fetch_events(sport_key: str = "basketball_nba") -> List[Dict[str, Any]]:
-    """
-    Auto-slate (non bloquant). Si l’endpoint est indispo selon ton plan, on ignore.
-    """
+def fetch_events(sport_key: str) -> List[Dict[str, Any]]:
     url = f"{BASE}/sports/{sport_key}/events"
     try:
         r = requests.get(url, params={"apiKey": _api_key()}, timeout=20)
         if r.status_code != 200:
             return []
-        j = r.json()
-        j = _normalize_shape(j)
+        j = _normalize_shape(r.json())
         return j if isinstance(j, list) else []
     except Exception:
         return []
 
 
-def fetch_odds(
-    sport_key: str,
-    regions: str,
-    markets: List[str],
-    odds_format: str = "decimal",
-    date_format: str = "iso",
-) -> Any:
+def fetch_odds(sport_key: str, regions: str, markets: List[str]) -> Any:
     url = f"{BASE}/sports/{sport_key}/odds"
     params = {
         "apiKey": _api_key(),
         "regions": regions,
         "markets": ",".join([m.strip() for m in markets if m]),
-        "oddsFormat": odds_format,
-        "dateFormat": date_format,
+        "oddsFormat": "decimal",
+        "dateFormat": "iso",
     }
     r = requests.get(url, params=params, timeout=35)
     if r.status_code != 200:
-        # useful debug without dumping secrets
         try:
             msg = r.json()
         except Exception:
@@ -101,10 +88,6 @@ def fetch_odds(
 
 
 def filter_books(games: List[Dict[str, Any]], preferred_books: Optional[List[str]]) -> List[Dict[str, Any]]:
-    """
-    preferred_books = ["fanduel","draftkings","betmgm",...]
-    - Si après filtrage un match n’a plus de bookmakers → on garde l’original (fallback).
-    """
     if not preferred_books:
         return games
     prefs = {b.lower().strip() for b in preferred_books if b and str(b).strip()}
@@ -138,25 +121,16 @@ def filter_books(games: List[Dict[str, Any]], preferred_books: Optional[List[str
 
 
 def fetch_odds_with_fallback(
+    sport_key: str,
     markets: List[str],
-    regions_priority: Optional[List[str]] = None,
-    sport_key: str = "basketball_nba",
+    regions_priority: List[str],
     preferred_books: Optional[List[str]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """
-    Retourne: (games, meta)
-    - auto-slate events (best effort)
-    - fallback régions
-    - parsing robuste (tuple/list/dict)
-    - fallback books
-    """
-    if not regions_priority:
-        regions_priority = ["us", "eu", "uk", "au"]
+    # auto-slate best effort (non-blocking)
+    _ = fetch_events(sport_key)
 
-    _ = fetch_events(sport_key=sport_key)
-
-    last_err: Optional[str] = None
     tried: List[str] = []
+    last_err: Optional[str] = None
 
     for reg in regions_priority:
         tried.append(reg)

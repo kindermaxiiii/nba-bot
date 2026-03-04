@@ -23,14 +23,14 @@ jobs:
       # - Accepts either a raw Discord URL OR a full JSON webhook object (with "url")
       # - Sends a debug message if possible
       # - NEVER fails the workflow (so the bot still runs)
-      - name: Pre-check webhooks (accept URL or JSON, non-blocking)
+      - name: Pre-check webhooks (accept URL or JSON, non-blocking, detailed)
         env:
           DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
           DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
         run: |
           python - <<'PY'
-          import os, json, urllib.request
+          import os, json, urllib.request, urllib.error
 
           def normalize(v: str) -> str:
               v = (v or "").strip()
@@ -45,32 +45,36 @@ jobs:
                   v = v[1:-1]
               return v.strip()
 
-          def post(url: str, content: str) -> bool:
+          def post(url: str, content: str):
               url = normalize(url)
               if not url:
-                  return False
+                  return (False, "EMPTY_URL")
               data = json.dumps({"content": content}).encode("utf-8")
               req = urllib.request.Request(
                   url, data=data, headers={"Content-Type":"application/json"}, method="POST"
               )
               try:
                   with urllib.request.urlopen(req, timeout=15) as r:
-                      return r.status in (200, 204)
-              except Exception:
-                  return False
+                      return (r.status in (200, 204), f"HTTP_{r.status}")
+              except urllib.error.HTTPError as e:
+                  return (False, f"HTTP_{e.code}")
+              except Exception as e:
+                  return (False, f"ERR_{type(e).__name__}")
 
           team_raw  = os.getenv("DISCORD_TEAM_WEBHOOK","")
           props_raw = os.getenv("DISCORD_PROPS_WEBHOOK","")
           log_raw   = os.getenv("DISCORD_LOG_WEBHOOK","")
 
-          ok_team  = post(team_raw,  "NBA BOT DEBUG: TEAM webhook OK (pre-checkout)")
-          ok_props = post(props_raw, "NBA BOT DEBUG: PROPS webhook OK (pre-checkout)")
-          ok_log   = post(log_raw,   "NBA BOT DEBUG: workflow started (pre-checkout)")
+          ok_team, st_team   = post(team_raw,  "NBA BOT DEBUG: TEAM webhook check (pre-checkout)")
+          ok_props, st_props = post(props_raw, "NBA BOT DEBUG: PROPS webhook check (pre-checkout)")
+          ok_log, st_log     = post(log_raw,   "NBA BOT DEBUG: LOG webhook check (pre-checkout)")
+
+          print(f"TEAM_OK={ok_team} {st_team}")
+          print(f"PROPS_OK={ok_props} {st_props}")
+          print(f"LOG_OK={ok_log} {st_log}")
 
           if not (ok_team and ok_props and ok_log):
               print("⚠️ Webhook pre-check not fully OK (continuing anyway).")
-              # Print which ones failed without leaking secrets
-              print(f"TEAM_OK={ok_team} PROPS_OK={ok_props} LOG_OK={ok_log}")
           else:
               print("✅ Webhooks OK")
           PY
@@ -92,14 +96,13 @@ jobs:
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
         run: |
           python - <<'PY'
-          import os, json, urllib.request
+          import os, json, urllib.request, urllib.error
 
           def normalize(v: str) -> str:
               v = (v or "").strip()
               if v.startswith("{"):
                   try:
-                      import json as _json
-                      v = _json.loads(v).get("url","").strip()
+                      v = json.loads(v).get("url","").strip()
                   except Exception:
                       pass
               if v.startswith('"') and v.endswith('"'):
@@ -113,9 +116,12 @@ jobs:
 
           data = json.dumps({"content":"NBA BOT DEBUG: deps installed, about to run main.py"}).encode("utf-8")
           req  = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"}, method="POST")
+
           try:
-              urllib.request.urlopen(req, timeout=15).read()
-              print("Debug post OK")
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  print("Debug post OK:", r.status)
+          except urllib.error.HTTPError as e:
+              print("Debug post failed (continuing): HTTP", e.code)
           except Exception as e:
               print("Debug post failed (continuing):", repr(e))
           PY
@@ -133,6 +139,7 @@ jobs:
       - name: Run bot
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          BALLDONTLIE_API_KEY: ${{ secrets.BALLDONTLIE_API_KEY }}
           DISCORD_TEAM_WEBHOOK: ${{ secrets.DISCORD_TEAM_WEBHOOK }}
           DISCORD_PROPS_WEBHOOK: ${{ secrets.DISCORD_PROPS_WEBHOOK }}
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
